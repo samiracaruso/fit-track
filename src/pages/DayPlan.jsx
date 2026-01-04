@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
+import { supabase } from '@/supabaseClient'; // Swapped to Supabase
 import { useNavigate } from 'react-router-dom';
-import { Plus, Edit2, Trash2, ArrowLeft, GripVertical, Play } from 'lucide-react';
+import { Plus, Edit2, Trash2, ArrowLeft, Play } from 'lucide-react';
 import ExerciseLibrary from '../components/ExerciseLibrary';
 import ExerciseSetsEditor from '../components/ExerciseSetsEditor';
 
@@ -21,12 +21,18 @@ export default function DayPlan() {
 
   const loadDayPlans = async () => {
     try {
-      const currentUser = await base44.auth.me();
-      const plans = await base44.entities.WorkoutPlan.filter({ 
-        day_of_week: day,
-        created_by: currentUser.email 
-      });
-      setWorkoutPlans(plans.sort((a, b) => a.order - b.order));
+      setLoading(true);
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      const { data, error } = await supabase
+        .from('workout_plans')
+        .select('*')
+        .eq('day_of_week', day)
+        .eq('user_id', user.id)
+        .order('order_index', { ascending: true });
+
+      if (error) throw error;
+      setWorkoutPlans(data || []);
     } catch (error) {
       console.error('Error loading plans:', error);
     } finally {
@@ -36,23 +42,30 @@ export default function DayPlan() {
 
   const handleSelectExercise = async (exercises) => {
       const exerciseArray = Array.isArray(exercises) ? exercises : [exercises];
-      const maxOrder = workoutPlans.length > 0 ? Math.max(...workoutPlans.map(p => p.order || 0)) : 0;
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      // Calculate next order index
+      const maxOrder = workoutPlans.length > 0 
+        ? Math.max(...workoutPlans.map(p => p.order_index || 0)) 
+        : 0;
 
-      for (let i = 0; i < exerciseArray.length; i++) {
-        const exercise = exerciseArray[i];
-        
-        // Ensure we have the full exercise data with image_url
-        const fullExercise = await base44.entities.Exercise.filter({ id: exercise.id });
-        const exerciseData = fullExercise[0] || exercise;
-        
-        await base44.entities.WorkoutPlan.create({
-          day_of_week: day,
-          exercise_id: exerciseData.id,
-          exercise_name: exerciseData.name,
-          exercise_image_url: exerciseData.image_url,
-          order: maxOrder + i + 1,
-          sets: [{ reps: 0, weight_kg: 0, duration_minutes: 0, distance_km: 0 }]
-        });
+      const newPlans = exerciseArray.map((ex, i) => ({
+        user_id: user.id,
+        day_of_week: day,
+        exercise_id: ex.id,
+        exercise_name: ex.name,
+        exercise_image_url: ex.image_url,
+        order_index: maxOrder + i + 1,
+        sets: [{ reps: 0, weight_kg: 0, duration_minutes: 0, distance_km: 0 }]
+      }));
+
+      const { error } = await supabase
+        .from('workout_plans')
+        .insert(newPlans);
+
+      if (error) {
+        console.error('Error adding exercises:', error);
+        alert('Could not add exercises to plan');
       }
 
       setShowLibrary(false);
@@ -62,17 +75,34 @@ export default function DayPlan() {
   const handleDeletePlan = async (planId) => {
     if (confirm('Remove this exercise from your plan?')) {
       try {
-        await base44.entities.WorkoutPlan.delete(planId);
+        const { error } = await supabase
+          .from('workout_plans')
+          .delete()
+          .eq('id', planId);
+        
+        if (error) throw error;
+        loadDayPlans();
       } catch (error) {
         console.error('Error deleting plan:', error);
       }
-      loadDayPlans();
     }
   };
 
-  const handleUpdatePlan = async (planId, data) => {
+  const handleUpdatePlan = async (planId, updatedData) => {
     try {
-      await base44.entities.WorkoutPlan.update(planId, data);
+      // Clean data to match Supabase schema (mapping 'order' to 'order_index' if needed)
+      const payload = {
+        sets: updatedData.sets,
+        notes: updatedData.notes,
+        order_index: updatedData.order_index || updatedData.order
+      };
+
+      const { error } = await supabase
+        .from('workout_plans')
+        .update(payload)
+        .eq('id', planId);
+
+      if (error) throw error;
     } catch (error) {
       console.error('Error updating plan:', error);
     }
@@ -227,7 +257,7 @@ export default function DayPlan() {
       {editingPlan && (
         <ExerciseSetsEditor
           plan={editingPlan}
-          onSave={handleUpdatePlan}
+          onSave={(data) => handleUpdatePlan(editingPlan.id, data)}
           onClose={() => setEditingPlan(null)}
         />
       )}
