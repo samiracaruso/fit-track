@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
+import { supabase } from '../supabaseClient';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 import { ArrowLeft, Upload, X } from 'lucide-react';
@@ -45,12 +45,17 @@ export default function AdminExerciseEdit() {
 
   const loadExercise = async () => {
     try {
-      const exercises = await base44.entities.Exercise.filter({ id: exerciseId });
-      if (exercises[0]) {
-        setFormData(exercises[0]);
-      }
+      const { data, error } = await supabase
+        .from('exercises')
+        .select('*')
+        .eq('id', exerciseId)
+        .single();
+      
+      if (error) throw error;
+      if (data) setFormData(data);
     } catch (error) {
       console.error('Error loading exercise:', error);
+      toast.error('Could not load exercise details');
     } finally {
       setLoading(false);
     }
@@ -66,10 +71,19 @@ export default function AdminExerciseEdit() {
     setSaving(true);
     try {
       if (exerciseId) {
-        await base44.entities.Exercise.update(exerciseId, formData);
+        // Update existing
+        const { error } = await supabase
+          .from('exercises')
+          .update(formData)
+          .eq('id', exerciseId);
+        if (error) throw error;
         toast.success('Exercise updated');
       } else {
-        await base44.entities.Exercise.create(formData);
+        // Create new
+        const { error } = await supabase
+          .from('exercises')
+          .insert([formData]);
+        if (error) throw error;
         toast.success('Exercise created');
       }
       navigate(createPageUrl('AdminExercises'));
@@ -95,11 +109,27 @@ export default function AdminExerciseEdit() {
     if (!file) return;
     
     try {
-      const { file_url } = await base44.integrations.Core.UploadFile({ file });
+      const fileExt = file.name.split('.').pop();
+      const fileName = `${Math.random()}.${fileExt}`;
+      const filePath = `${type}s/${fileName}`; // e.g., images/randomid.jpg
+
+      // Upload to Supabase Storage
+      const { error: uploadError } = await supabase.storage
+        .from('exercise-media')
+        .upload(filePath, file);
+
+      if (uploadError) throw uploadError;
+
+      // Get the Public URL
+      const { data } = supabase.storage
+        .from('exercise-media')
+        .getPublicUrl(filePath);
+
       setFormData(prev => ({
         ...prev,
-        [type === 'image' ? 'image_url' : 'video_url']: file_url
+        [type === 'image' ? 'image_url' : 'video_url']: data.publicUrl
       }));
+      
       toast.success(`${type === 'image' ? 'Image' : 'Video'} uploaded`);
     } catch (error) {
       console.error('Upload error:', error);
