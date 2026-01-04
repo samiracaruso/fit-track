@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '@/supabaseClient';
 import { useNavigate } from 'react-router-dom';
-import { ChevronRight, Plus, Dumbbell, Activity, TrendingUp, Calendar as CalendarIcon, Play, Settings } from 'lucide-react';
-import { format, startOfWeek, addDays, isWithinInterval, endOfWeek } from 'date-fns';
+import { ChevronRight, Plus, Dumbbell, Activity, TrendingUp, Calendar as CalendarIcon, Play, Settings, Flame, Loader2 } from 'lucide-react';
+import { format, startOfWeek, addDays, endOfWeek, isSameDay } from 'date-fns';
 
 export default function Home() {
   const navigate = useNavigate();
@@ -17,227 +17,189 @@ export default function Home() {
 
   const loadData = async () => {
     try {
-      setLoading(true);
+      // 1. Instant Cache Load
+      const cachedPlans = localStorage.getItem('weekly_workout_plans');
+      const cachedSessions = localStorage.getItem('workout_history');
+      if (cachedPlans) setWorkoutPlans(JSON.parse(cachedPlans));
+      if (cachedSessions) setRecentSessions(JSON.parse(cachedSessions));
+
       const { data: { user: currentUser } } = await supabase.auth.getUser();
       setUser(currentUser);
       
-      // Fetch all plans for this user to count exercises for today
-      const { data: plans } = await supabase
-        .from('workout_plans')
-        .select('*')
-        .eq('user_id', currentUser.id);
-      setWorkoutPlans(plans || []);
-      
-      // Fetch sessions for the current week to show stats and calendar dots
-      const start = startOfWeek(new Date(), { weekStartsOn: 1 });
-      const end = endOfWeek(new Date(), { weekStartsOn: 1 });
+      // 2. Background Sync
+      const [plansRes, sessionsRes] = await Promise.all([
+        supabase.from('workout_plans').select('*').eq('user_id', currentUser.id),
+        supabase.from('workout_sessions')
+          .select('*')
+          .eq('user_id', currentUser.id)
+          .gte('date', format(startOfWeek(new Date(), { weekStartsOn: 1 }), 'yyyy-MM-dd'))
+          .order('date', { ascending: false })
+      ]);
 
-      const { data: sessions } = await supabase
-        .from('workout_sessions')
-        .select('*')
-        .eq('user_id', currentUser.id)
-        .gte('date', format(start, 'yyyy-MM-dd'))
-        .lte('date', format(end, 'yyyy-MM-dd'))
-        .order('date', { ascending: false });
-
-      setRecentSessions(sessions || []);
+      if (plansRes.data) {
+        setWorkoutPlans(plansRes.data);
+        localStorage.setItem('weekly_workout_plans', JSON.stringify(plansRes.data));
+      }
+      if (sessionsRes.data) {
+        setRecentSessions(sessionsRes.data);
+        localStorage.setItem('workout_history', JSON.stringify(sessionsRes.data));
+      }
     } catch (error) {
-      console.error('Error loading home data:', error);
+      console.log('Using offline data for dashboard');
     } finally {
       setLoading(false);
     }
   };
 
-  const getWeekDays = () => {
-    const today = new Date();
-    const start = startOfWeek(today, { weekStartsOn: 1 });
-    return Array.from({ length: 7 }, (_, i) => {
-      const date = addDays(start, i);
-      const dateStr = format(date, 'yyyy-MM-dd');
-      // A day is "completed" if there is a session with status completed on that date
-      const hasSession = recentSessions.some(s => s.date === dateStr && s.status === 'completed');
-      return {
-        date,
-        dateStr,
-        dayName: format(date, 'EEEE').toLowerCase(),
-        dayShort: format(date, 'EEE'),
-        dayNum: format(date, 'd'),
-        isToday: dateStr === format(today, 'yyyy-MM-dd'),
-        hasSession
-      };
-    });
-  };
-
-  const weekDays = getWeekDays();
-
-  const getWeekStats = () => {
-    const completed = recentSessions.filter(s => s.status === 'completed').length;
-    const totalCalories = recentSessions.reduce((sum, s) => sum + (s.total_calories_burned || 0), 0);
-    
-    return { 
-      workouts: completed, 
-      calories: Math.round(totalCalories) 
+  const weekDays = Array.from({ length: 7 }, (_, i) => {
+    const date = addDays(startOfWeek(new Date(), { weekStartsOn: 1 }), i);
+    const dateStr = format(date, 'yyyy-MM-dd');
+    return {
+      date,
+      dateStr,
+      dayName: format(date, 'EEEE').toLowerCase(),
+      dayShort: format(date, 'EEE')[0], // Just 'M', 'T', 'W'...
+      isToday: isSameDay(date, new Date()),
+      hasSession: recentSessions.some(s => s.date === dateStr && s.status === 'completed')
     };
+  });
+
+  const stats = {
+    workouts: recentSessions.filter(s => s.status === 'completed').length,
+    calories: Math.round(recentSessions.reduce((sum, s) => sum + (s.total_calories_burned || 0), 0)),
+    streak: 0 // Logic for streak can be added here
   };
 
-  const stats = getWeekStats();
   const todayName = format(new Date(), 'EEEE').toLowerCase();
   const todayExercises = workoutPlans.filter(p => p.day_of_week === todayName).length;
 
-  if (loading) {
+  if (loading && workoutPlans.length === 0) {
     return (
-      <div className="flex items-center justify-center h-screen bg-[#0a0a0a]">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-[#00d4ff]"></div>
+      <div className="flex items-center justify-center h-screen bg-black">
+        <Loader2 className="animate-spin text-cyan-500" size={32} />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] pb-8">
-      {/* Header */}
-      <div className="bg-gradient-to-b from-[#1a1a1a] to-[#0a0a0a] px-6 pt-8 pb-6">
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-3xl font-bold text-white mb-1">Workout Planner</h1>
-            <p className="text-[#a0a0a0]">
-              Welcome back, {user?.user_metadata?.full_name?.split(' ')[0] || 'Athlete'}
-            </p>
+    <div className="min-h-screen bg-black pb-24 text-white">
+      {/* App Bar */}
+      <div className="px-6 pt-8 pb-6 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center font-black italic border border-white/20">
+            {user?.email?.[0].toUpperCase() || 'A'}
           </div>
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => navigate('/Settings')}
-              className="w-12 h-12 rounded-full bg-[#1a1a1a] border border-[#2a2a2a] flex items-center justify-center text-[#a0a0a0] active:scale-95 transition-transform"
-            >
-              <Settings className="w-6 h-6" />
-            </button>
-            <button
-              onClick={() => navigate('/Profile')}
-              className="active:scale-95 transition-transform"
-            >
-              <div className="w-12 h-12 rounded-full bg-gradient-to-br from-[#00d4ff] to-[#7c3aed] flex items-center justify-center text-white font-bold text-lg border-2 border-[#00d4ff]/20">
-                {user?.user_metadata?.full_name?.[0] || user?.email?.[0].toUpperCase() || 'U'}
-              </div>
-            </button>
+          <div>
+            <h1 className="text-xs font-black uppercase tracking-[0.2em] text-zinc-500">Welcome Back</h1>
+            <p className="text-sm font-bold">Athlete Session</p>
           </div>
         </div>
+        <button onClick={() => navigate('/Settings')} className="p-3 bg-zinc-900 rounded-2xl border border-zinc-800 text-zinc-400">
+          <Settings size={20} />
+        </button>
+      </div>
 
-        {/* Week Stats */}
-        <div className="grid grid-cols-2 gap-4">
-          <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-2xl p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Dumbbell className="w-5 h-5 text-[#00d4ff]" />
-              <span className="text-[#a0a0a0] text-sm">This Week</span>
-            </div>
-            <p className="text-3xl font-bold text-white">{stats.workouts}</p>
-            <p className="text-xs text-[#a0a0a0] mt-1">Workouts Completed</p>
+      {/* Hero Stats */}
+      <div className="px-6 mb-8">
+        <div className="bg-gradient-to-br from-zinc-900 to-black border border-zinc-800 rounded-[2.5rem] p-8 relative overflow-hidden">
+          <div className="absolute top-0 right-0 p-8 opacity-10">
+            <Activity size={120} className="text-cyan-500" />
           </div>
-          
-          <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-2xl p-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Activity className="w-5 h-5 text-[#7c3aed]" />
-              <span className="text-[#a0a0a0] text-sm">Calories</span>
+          <div className="relative z-10">
+            <div className="flex items-center gap-2 mb-6">
+              <Flame size={16} className="text-orange-500 fill-orange-500" />
+              <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Weekly Performance</span>
             </div>
-            <p className="text-3xl font-bold text-white">{stats.calories}</p>
-            <p className="text-xs text-[#a0a0a0] mt-1">kcal burned</p>
+            <div className="flex gap-10">
+              <div>
+                <p className="text-4xl font-black italic tracking-tighter mb-1">{stats.workouts}</p>
+                <p className="text-[10px] font-bold uppercase text-zinc-500 tracking-wider">Workouts</p>
+              </div>
+              <div className="w-px h-12 bg-zinc-800" />
+              <div>
+                <p className="text-4xl font-black italic tracking-tighter mb-1">{stats.calories}</p>
+                <p className="text-[10px] font-bold uppercase text-zinc-500 tracking-wider">Calories</p>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Weekly Calendar */}
-      <div className="px-6 mt-6">
+      {/* Weekly Tracker */}
+      <div className="px-6 mb-10">
         <div className="flex items-center justify-between mb-4">
-          <h2 className="text-xl font-bold text-white">Weekly Progress</h2>
-          <button
-            onClick={() => navigate('/Calendar')}
-            className="text-[#00d4ff] text-sm font-medium flex items-center gap-1"
-          >
-            View All <ChevronRight className="w-4 h-4" />
-          </button>
+          <h2 className="text-xs font-black uppercase tracking-[0.2em] text-zinc-500">Weekly Progress</h2>
+          <button onClick={() => navigate('/Calendar')} className="text-cyan-500 text-[10px] font-black uppercase tracking-widest">History</button>
         </div>
-
-        <div className="grid grid-cols-7 gap-2">
+        <div className="flex justify-between">
           {weekDays.map((day) => (
-            <button
-              key={day.dateStr}
-              onClick={() => navigate(`/DayPlan?day=${day.dayName}`)}
-              className={`aspect-square rounded-2xl border ${
-                day.isToday
-                  ? 'border-[#00d4ff] bg-[#00d4ff]/10 shadow-[0_0_15px_rgba(0,212,255,0.2)]'
-                  : day.hasSession
-                  ? 'border-[#10b981] bg-[#10b981]/10'
-                  : 'border-[#2a2a2a] bg-transparent'
-              } flex flex-col items-center justify-center transition-all active:scale-95`}
-            >
-              <span className={`text-[10px] uppercase font-bold mb-1 ${day.isToday ? 'text-[#00d4ff]' : 'text-[#a0a0a0]'}`}>
-                {day.dayShort}
-              </span>
-              <span className={`text-lg font-bold ${day.isToday ? 'text-[#00d4ff]' : 'text-white'}`}>
-                {day.dayNum}
-              </span>
-              {day.hasSession && (
-                <div className="w-1.5 h-1.5 rounded-full bg-[#10b981] mt-1" />
-              )}
-            </button>
+            <div key={day.dateStr} className="flex flex-col items-center gap-2">
+              <span className={`text-[10px] font-black ${day.isToday ? 'text-cyan-500' : 'text-zinc-700'}`}>{day.dayShort}</span>
+              <div 
+                className={`w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
+                  day.hasSession ? 'bg-emerald-500 text-black' : 
+                  day.isToday ? 'bg-zinc-800 border-2 border-cyan-500 text-cyan-500' : 
+                  'bg-zinc-900 border border-zinc-800 text-zinc-600'
+                }`}
+              >
+                <span className="text-xs font-black">{day.date.getDate()}</span>
+              </div>
+            </div>
           ))}
         </div>
       </div>
 
-      {/* Quick Actions */}
-      <div className="px-6 mt-8">
-        <h2 className="text-xl font-bold text-white mb-4">Quick Actions</h2>
-        
-        <div className="space-y-3">
-          <button
-            onClick={() => navigate(`/StartWorkout?day=${todayName}`)}
-            className="w-full bg-gradient-to-r from-[#00d4ff] to-[#0099cc] rounded-2xl p-4 flex items-center justify-between shadow-lg shadow-[#00d4ff]/20 active:scale-98 transition-transform"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 bg-white/10 rounded-xl flex items-center justify-center">
-                <Play className="w-6 h-6 text-white" />
-              </div>
-              <div className="text-left">
-                <p className="font-bold text-white text-lg">Start Today's Workout</p>
-                <p className="text-white/70 text-sm">
-                  {todayExercises} exercise{todayExercises !== 1 ? 's' : ''} planned for today
-                </p>
-              </div>
+      {/* Action Cards */}
+      <div className="px-6 space-y-4">
+        <button
+          onClick={() => navigate(`/StartWorkout?day=${todayName}`)}
+          className="w-full bg-cyan-500 rounded-[2rem] p-6 flex items-center justify-between group active:scale-95 transition-all shadow-xl shadow-cyan-500/20"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-14 h-14 bg-black rounded-2xl flex items-center justify-center text-cyan-500">
+              <Play size={24} fill="currentColor" />
             </div>
-            <ChevronRight className="w-6 h-6 text-white" />
-          </button>
+            <div className="text-left">
+              <p className="text-[10px] font-black uppercase text-black/60 tracking-widest">Next Session</p>
+              <h3 className="text-xl font-black text-black uppercase italic tracking-tighter">Start Training</h3>
+              <p className="text-[10px] font-bold text-black/60 uppercase">{todayExercises} Exercises Ready</p>
+            </div>
+          </div>
+          <ChevronRight className="text-black/40 group-hover:text-black" />
+        </button>
 
+        <div className="grid grid-cols-2 gap-4">
           <button
             onClick={() => navigate('/WeeklyPlan')}
-            className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-2xl p-4 flex items-center justify-between active:scale-98 transition-transform"
+            className="bg-zinc-900 border border-zinc-800 rounded-[2rem] p-6 text-left active:scale-95 transition-all"
           >
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 bg-[#7c3aed]/10 rounded-xl flex items-center justify-center">
-                <CalendarIcon className="w-6 h-6 text-[#7c3aed]" />
-              </div>
-              <div className="text-left">
-                <p className="font-bold text-white">Edit Weekly Plan</p>
-                <p className="text-[#a0a0a0] text-sm">Adjust your routine</p>
-              </div>
+            <div className="w-10 h-10 bg-zinc-800 rounded-xl flex items-center justify-center text-zinc-400 mb-4">
+              <CalendarIcon size={20} />
             </div>
-            <ChevronRight className="w-6 h-6 text-[#a0a0a0]" />
+            <h4 className="text-xs font-black uppercase tracking-widest mb-1">Schedule</h4>
+            <p className="text-[10px] text-zinc-500 font-bold uppercase">Edit Routine</p>
           </button>
 
           <button
             onClick={() => navigate('/WorkoutHistory')}
-            className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-2xl p-4 flex items-center justify-between active:scale-98 transition-transform"
+            className="bg-zinc-900 border border-zinc-800 rounded-[2rem] p-6 text-left active:scale-95 transition-all"
           >
-            <div className="flex items-center gap-3">
-              <div className="w-12 h-12 bg-[#10b981]/10 rounded-xl flex items-center justify-center">
-                <TrendingUp className="w-6 h-6 text-[#10b981]" />
-              </div>
-              <div className="text-left">
-                <p className="font-bold text-white">Workout History</p>
-                <p className="text-[#a0a0a0] text-sm">Review your progress</p>
-              </div>
+            <div className="w-10 h-10 bg-zinc-800 rounded-xl flex items-center justify-center text-zinc-400 mb-4">
+              <TrendingUp size={20} />
             </div>
-            <ChevronRight className="w-6 h-6 text-[#a0a0a0]" />
+            <h4 className="text-xs font-black uppercase tracking-widest mb-1">Analysis</h4>
+            <p className="text-[10px] text-zinc-500 font-bold uppercase">View Trends</p>
           </button>
         </div>
       </div>
+
+      {/* Quick Add Button */}
+      <button 
+        onClick={() => navigate('/AdminExercises')}
+        className="fixed bottom-8 right-6 w-16 h-16 bg-white text-black rounded-full shadow-2xl flex items-center justify-center active:scale-90 transition-transform z-20"
+      >
+        <Plus size={32} />
+      </button>
     </div>
   );
 }
