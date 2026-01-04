@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '../supabaseClient';
-import { useNavigate } from 'react-router-dom';
-import { createPageUrl } from '../utils';
-import { ArrowLeft, Upload, X } from 'lucide-react';
+import { supabase } from '@/supabaseClient';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowLeft, Upload, X, Loader2 } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
@@ -14,8 +13,8 @@ const exerciseTypes = ['weights', 'machine', 'bodyweight', 'cardio'];
 
 export default function AdminExerciseEdit() {
   const navigate = useNavigate();
-  const urlParams = new URLSearchParams(window.location.search);
-  const exerciseId = urlParams.get('id');
+  const [searchParams] = useSearchParams();
+  const exerciseId = searchParams.get('id');
   
   const [loading, setLoading] = useState(!!exerciseId);
   const [saving, setSaving] = useState(false);
@@ -29,8 +28,8 @@ export default function AdminExerciseEdit() {
     video_url: '',
     calories_per_minute: 5,
     is_cardio: false,
-    has_reps: false,
-    has_weight: false,
+    has_reps: true,
+    has_weight: true,
     has_time: false,
     has_distance: false,
     has_floors: false,
@@ -54,7 +53,6 @@ export default function AdminExerciseEdit() {
       if (error) throw error;
       if (data) setFormData(data);
     } catch (error) {
-      console.error('Error loading exercise:', error);
       toast.error('Could not load exercise details');
     } finally {
       setLoading(false);
@@ -71,7 +69,6 @@ export default function AdminExerciseEdit() {
     setSaving(true);
     try {
       if (exerciseId) {
-        // Update existing
         const { error } = await supabase
           .from('exercises')
           .update(formData)
@@ -79,48 +76,39 @@ export default function AdminExerciseEdit() {
         if (error) throw error;
         toast.success('Exercise updated');
       } else {
-        // Create new
         const { error } = await supabase
           .from('exercises')
           .insert([formData]);
         if (error) throw error;
         toast.success('Exercise created');
       }
-      navigate(createPageUrl('AdminExercises'));
+      
+      // Clear the local exercises cache so the app fetches the fresh list
+      localStorage.removeItem('exercises_cache');
+      navigate('/AdminExercises');
     } catch (error) {
-      console.error('Error saving exercise:', error);
       toast.error('Failed to save exercise');
     } finally {
       setSaving(false);
     }
   };
 
-  const toggleMuscleGroup = (muscle) => {
-    setFormData(prev => ({
-      ...prev,
-      muscle_groups: prev.muscle_groups.includes(muscle)
-        ? prev.muscle_groups.filter(m => m !== muscle)
-        : [...prev.muscle_groups, muscle]
-    }));
-  };
-
   const handleFileUpload = async (e, type) => {
     const file = e.target.files[0];
     if (!file) return;
     
+    const loadingToast = toast.loading(`Uploading ${type}...`);
     try {
       const fileExt = file.name.split('.').pop();
-      const fileName = `${Math.random()}.${fileExt}`;
-      const filePath = `${type}s/${fileName}`; // e.g., images/randomid.jpg
+      const fileName = `${Math.random().toString(36).substring(2)}.${fileExt}`;
+      const filePath = `${type}s/${fileName}`;
 
-      // Upload to Supabase Storage
       const { error: uploadError } = await supabase.storage
         .from('exercise-media')
         .upload(filePath, file);
 
       if (uploadError) throw uploadError;
 
-      // Get the Public URL
       const { data } = supabase.storage
         .from('exercise-media')
         .getPublicUrl(filePath);
@@ -130,214 +118,168 @@ export default function AdminExerciseEdit() {
         [type === 'image' ? 'image_url' : 'video_url']: data.publicUrl
       }));
       
-      toast.success(`${type === 'image' ? 'Image' : 'Video'} uploaded`);
+      toast.dismiss(loadingToast);
+      toast.success('Upload complete');
     } catch (error) {
-      console.error('Upload error:', error);
+      toast.dismiss(loadingToast);
       toast.error('Upload failed');
     }
   };
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-screen bg-[#0a0a0a]">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-[#00d4ff]"></div>
+      <div className="flex items-center justify-center h-screen bg-black">
+        <Loader2 className="animate-spin text-cyan-500 w-10 h-10" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] pb-8">
-      {/* Header */}
-      <div className="bg-gradient-to-b from-[#1a1a1a] to-[#0a0a0a] px-6 pt-8 pb-6 sticky top-0 z-10">
-        <button
-          onClick={() => navigate(createPageUrl('AdminExercises'))}
-          className="mb-4 flex items-center gap-2 text-[#a0a0a0]"
-        >
-          <ArrowLeft className="w-5 h-5" />
-          <span>Back</span>
+    <div className="min-h-screen bg-black pb-12 text-white">
+      {/* Sticky Header */}
+      <div className="bg-black/80 backdrop-blur-md px-6 pt-8 pb-4 sticky top-0 z-20 border-b border-zinc-900">
+        <button onClick={() => navigate('/AdminExercises')} className="mb-4 flex items-center gap-2 text-zinc-400">
+          <ArrowLeft size={20} /> Back
         </button>
-        
-        <h1 className="text-3xl font-bold text-white">
+        <h1 className="text-2xl font-black italic tracking-tighter uppercase">
           {exerciseId ? 'Edit Exercise' : 'New Exercise'}
         </h1>
       </div>
 
-      {/* Form */}
-      <form onSubmit={handleSubmit} className="px-6 mt-6 space-y-6">
-        {/* Name */}
-        <div>
-          <Label className="text-white mb-2">Exercise Name *</Label>
+      <form onSubmit={handleSubmit} className="px-6 mt-6 space-y-8">
+        {/* Name Input */}
+        <section className="space-y-2">
+          <Label className="uppercase text-[10px] font-black tracking-widest text-zinc-500">Exercise Name</Label>
           <Input
             value={formData.name}
             onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-            className="bg-[#1a1a1a] border-[#2a2a2a] text-white"
-            placeholder="e.g., Bench Press"
-            required
+            className="bg-zinc-900 border-zinc-800 h-12 text-lg focus:ring-cyan-500"
+            placeholder="e.g. Incline DB Press"
           />
-        </div>
+        </section>
 
-        {/* Type */}
-        <div>
-          <Label className="text-white mb-2">Exercise Type</Label>
+        {/* Type Selection */}
+        <section className="space-y-3">
+          <Label className="uppercase text-[10px] font-black tracking-widest text-zinc-500">Category</Label>
           <div className="grid grid-cols-2 gap-2">
             {exerciseTypes.map((type) => (
               <button
                 key={type}
                 type="button"
                 onClick={() => setFormData({ ...formData, type, is_cardio: type === 'cardio' })}
-                className={`px-4 py-3 rounded-xl font-medium capitalize ${
-                  formData.type === type
-                    ? 'bg-[#00d4ff] text-white'
-                    : 'bg-[#1a1a1a] text-[#a0a0a0] border border-[#2a2a2a]'
+                className={`py-3 rounded-xl text-sm font-bold capitalize transition-all border ${
+                  formData.type === type ? 'bg-cyan-500 border-cyan-500 text-black' : 'bg-zinc-900 border-zinc-800 text-zinc-400'
                 }`}
               >
                 {type}
               </button>
             ))}
           </div>
-        </div>
+        </section>
 
-        {/* Input Types - Checkboxes */}
-        <div>
-          <Label className="text-white mb-2">Tracking Inputs</Label>
-          <div className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl p-4 space-y-3">
+        {/* Tracking Options */}
+        <section className="space-y-3">
+          <Label className="uppercase text-[10px] font-black tracking-widest text-zinc-500">Trackable Metrics</Label>
+          <div className="grid grid-cols-2 gap-3 bg-zinc-900/50 p-4 rounded-2xl border border-zinc-900">
             {[
               { key: 'has_reps', label: 'Reps' },
-              { key: 'has_weight', label: 'Weight (kg)' },
-              { key: 'has_time', label: 'Time (minutes)' },
-              { key: 'has_distance', label: 'Distance (km)' },
-              { key: 'has_floors', label: 'Floors' },
-              { key: 'has_steps', label: 'Steps' }
+              { key: 'has_weight', label: 'Weight' },
+              { key: 'has_time', label: 'Time' },
+              { key: 'has_distance', label: 'Distance' },
             ].map(({ key, label }) => (
-              <label key={key} className="flex items-center gap-3 cursor-pointer">
+              <label key={key} className="flex items-center gap-3 cursor-pointer group">
                 <input
                   type="checkbox"
                   checked={formData[key] || false}
                   onChange={(e) => setFormData({ ...formData, [key]: e.target.checked })}
-                  className="w-5 h-5 rounded border-[#2a2a2a] bg-[#1a1a1a] text-[#00d4ff] focus:ring-[#00d4ff]"
+                  className="w-5 h-5 rounded bg-zinc-800 border-zinc-700 text-cyan-500 focus:ring-0"
                 />
-                <span className="text-white">{label}</span>
+                <span className={`text-sm font-bold ${formData[key] ? 'text-white' : 'text-zinc-500'}`}>{label}</span>
               </label>
             ))}
           </div>
-        </div>
+        </section>
 
         {/* Muscle Groups */}
-        <div>
-          <Label className="text-white mb-2">Muscle Groups *</Label>
-          <div className="grid grid-cols-3 gap-2">
-            {muscleGroups.map((muscle) => (
-              <button
-                key={muscle}
-                type="button"
-                onClick={() => toggleMuscleGroup(muscle)}
-                className={`px-3 py-2 rounded-xl text-sm font-medium capitalize ${
-                  formData.muscle_groups.includes(muscle)
-                    ? 'bg-[#00d4ff] text-white'
-                    : 'bg-[#1a1a1a] text-[#a0a0a0] border border-[#2a2a2a]'
-                }`}
-              >
-                {muscle.replace('_', ' ')}
-              </button>
-            ))}
+        <section className="space-y-3">
+          <Label className="uppercase text-[10px] font-black tracking-widest text-zinc-500">Target Muscles</Label>
+          <div className="flex flex-wrap gap-2">
+            {muscleGroups.map((muscle) => {
+              const active = formData.muscle_groups.includes(muscle);
+              return (
+                <button
+                  key={muscle}
+                  type="button"
+                  onClick={() => setFormData(prev => ({
+                    ...prev,
+                    muscle_groups: active ? prev.muscle_groups.filter(m => m !== muscle) : [...prev.muscle_groups, muscle]
+                  }))}
+                  className={`px-4 py-2 rounded-full text-xs font-black uppercase tracking-tight transition-all ${
+                    active ? 'bg-white text-black' : 'bg-zinc-900 text-zinc-600 border border-zinc-800'
+                  }`}
+                >
+                  {muscle.replace('_', ' ')}
+                </button>
+              );
+            })}
           </div>
-        </div>
+        </section>
 
-        {/* Equipment */}
-        <div>
-          <Label className="text-white mb-2">Equipment</Label>
-          <Input
-            value={formData.equipment}
-            onChange={(e) => setFormData({ ...formData, equipment: e.target.value })}
-            className="bg-[#1a1a1a] border-[#2a2a2a] text-white"
-            placeholder="e.g., Barbell, Dumbbells, None"
-          />
-        </div>
+        {/* Media Uploads */}
+        <section className="grid grid-cols-2 gap-4">
+          <div className="space-y-2">
+             <Label className="uppercase text-[10px] font-black text-zinc-500">Image</Label>
+             <div className="aspect-square bg-zinc-900 rounded-2xl border border-zinc-800 flex items-center justify-center relative overflow-hidden">
+                {formData.image_url ? (
+                  <>
+                    <img src={formData.image_url} className="w-full h-full object-cover" />
+                    <button onClick={() => setFormData({...formData, image_url: ''})} className="absolute top-2 right-2 p-1 bg-red-500 rounded-full"><X size={12}/></button>
+                  </>
+                ) : (
+                  <label className="cursor-pointer flex flex-col items-center">
+                    <Upload className="text-zinc-700 mb-1" />
+                    <span className="text-[10px] text-zinc-700 uppercase font-black">Upload</span>
+                    <input type="file" accept="image/*" onChange={(e) => handleFileUpload(e, 'image')} className="hidden" />
+                  </label>
+                )}
+             </div>
+          </div>
+          <div className="space-y-2">
+             <Label className="uppercase text-[10px] font-black text-zinc-500">Video</Label>
+             <div className="aspect-square bg-zinc-900 rounded-2xl border border-zinc-800 flex items-center justify-center relative overflow-hidden">
+                {formData.video_url ? (
+                  <>
+                    <video src={formData.video_url} className="w-full h-full object-cover" muted loop autoPlay />
+                    <button onClick={() => setFormData({...formData, video_url: ''})} className="absolute top-2 right-2 p-1 bg-red-500 rounded-full"><X size={12}/></button>
+                  </>
+                ) : (
+                  <label className="cursor-pointer flex flex-col items-center">
+                    <Upload className="text-zinc-700 mb-1" />
+                    <span className="text-[10px] text-zinc-700 uppercase font-black">Upload</span>
+                    <input type="file" accept="video/*" onChange={(e) => handleFileUpload(e, 'video')} className="hidden" />
+                  </label>
+                )}
+             </div>
+          </div>
+        </section>
 
         {/* Description */}
-        <div>
-          <Label className="text-white mb-2">Description</Label>
+        <section className="space-y-2">
+          <Label className="uppercase text-[10px] font-black text-zinc-500">Instructions</Label>
           <Textarea
             value={formData.description}
             onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-            className="bg-[#1a1a1a] border-[#2a2a2a] text-white h-24"
-            placeholder="How to perform the exercise..."
+            className="bg-zinc-900 border-zinc-800 min-h-[120px]"
+            placeholder="Focus on the squeeze at the top..."
           />
-        </div>
+        </section>
 
-        {/* Calories */}
-        <div>
-          <Label className="text-white mb-2">Calories per Minute</Label>
-          <Input
-            type="number"
-            step="0.5"
-            value={formData.calories_per_minute}
-            onChange={(e) => setFormData({ ...formData, calories_per_minute: parseFloat(e.target.value) })}
-            className="bg-[#1a1a1a] border-[#2a2a2a] text-white"
-          />
-        </div>
-
-        {/* Image Upload */}
-        <div>
-          <Label className="text-white mb-2">Image</Label>
-          {formData.image_url && (
-            <div className="relative w-full h-48 mb-2 rounded-xl overflow-hidden">
-              <img src={formData.image_url} alt="Preview" className="w-full h-full object-cover" />
-              <button
-                type="button"
-                onClick={() => setFormData({ ...formData, image_url: '' })}
-                className="absolute top-2 right-2 w-8 h-8 bg-red-500 rounded-full flex items-center justify-center"
-              >
-                <X className="w-5 h-5 text-white" />
-              </button>
-            </div>
-          )}
-          <label className="w-full bg-[#1a1a1a] border-2 border-dashed border-[#2a2a2a] rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer">
-            <Upload className="w-8 h-8 text-[#a0a0a0] mb-2" />
-            <span className="text-[#a0a0a0] text-sm">Upload Image</span>
-            <input
-              type="file"
-              accept="image/*"
-              onChange={(e) => handleFileUpload(e, 'image')}
-              className="hidden"
-            />
-          </label>
-        </div>
-
-        {/* Video Upload */}
-        <div>
-          <Label className="text-white mb-2">Video</Label>
-          {formData.video_url && (
-            <div className="relative w-full h-48 mb-2 rounded-xl overflow-hidden">
-              <video src={formData.video_url} className="w-full h-full object-cover" loop muted playsInline />
-              <button
-                type="button"
-                onClick={() => setFormData({ ...formData, video_url: '' })}
-                className="absolute top-2 right-2 w-8 h-8 bg-red-500 rounded-full flex items-center justify-center"
-              >
-                <X className="w-5 h-5 text-white" />
-              </button>
-            </div>
-          )}
-          <label className="w-full bg-[#1a1a1a] border-2 border-dashed border-[#2a2a2a] rounded-xl p-4 flex flex-col items-center justify-center cursor-pointer">
-            <Upload className="w-8 h-8 text-[#a0a0a0] mb-2" />
-            <span className="text-[#a0a0a0] text-sm">Upload Video</span>
-            <input
-              type="file"
-              accept="video/*"
-              onChange={(e) => handleFileUpload(e, 'video')}
-              className="hidden"
-            />
-          </label>
-        </div>
-
-        {/* Submit Button */}
         <Button
           type="submit"
           disabled={saving}
-          className="w-full bg-gradient-to-r from-[#00d4ff] to-[#0099cc] text-white py-6 rounded-xl font-bold text-lg"
+          className="w-full bg-cyan-500 text-black h-16 rounded-2xl font-black text-lg uppercase tracking-widest shadow-lg shadow-cyan-500/20"
         >
-          {saving ? 'Saving...' : exerciseId ? 'Update Exercise' : 'Create Exercise'}
+          {saving ? 'Synchronizing...' : exerciseId ? 'Update Exercise' : 'Create Exercise'}
         </Button>
       </form>
     </div>
