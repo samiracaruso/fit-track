@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
+import { supabase } from '../supabaseClient';
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 import { ArrowLeft, Plus, Search, Edit2, Trash2, Play } from 'lucide-react';
@@ -17,8 +17,14 @@ export default function AdminExercises() {
 
   const loadExercises = async () => {
     try {
-      const data = await base44.entities.Exercise.list('name', 1000);
-      setExercises(data);
+      // This asks Supabase for everything in the 'exercises' table, ordered by name
+      const { data, error } = await supabase
+        .from('exercises')
+        .select('*')
+        .order('name', { ascending: true });
+
+      if (error) throw error;
+      setExercises(data || []);
     } catch (error) {
       console.error('Error loading exercises:', error);
     } finally {
@@ -29,12 +35,16 @@ export default function AdminExercises() {
   const handleDelete = async (id) => {
     if (confirm('Delete this exercise? This cannot be undone.')) {
       try {
-        await base44.entities.Exercise.delete(id);
+        const { error } = await supabase
+          .from('exercises')
+          .delete()
+          .eq('id', id);
+
+        if (error) throw error;
         loadExercises();
       } catch (error) {
         console.error('Error deleting exercise:', error);
-        alert('Failed to delete exercise. It may have already been deleted.');
-        loadExercises();
+        alert('Failed to delete exercise.');
       }
     }
   };
