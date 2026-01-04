@@ -1,15 +1,15 @@
 import React, { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
-import { useNavigate } from 'react-router-dom';
-import { createPageUrl } from '../utils';
-import { ArrowLeft, Save, CheckCircle2, Circle, Edit3, Plus, X, Trash2 } from 'lucide-react';
+import { supabase } from '@/supabaseClient';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ArrowLeft, Save, CheckCircle2, Circle, Edit3, Plus, X, Trash2, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
 import ExerciseLibrary from '../components/ExerciseLibrary';
+import { toast } from 'sonner';
 
 export default function EditWorkout() {
   const navigate = useNavigate();
-  const urlParams = new URLSearchParams(window.location.search);
-  const sessionId = urlParams.get('id');
+  const [searchParams] = useSearchParams();
+  const sessionId = searchParams.get('id');
   
   const [session, setSession] = useState(null);
   const [exercises, setExercises] = useState([]);
@@ -19,381 +19,227 @@ export default function EditWorkout() {
   const [showLibrary, setShowLibrary] = useState(false);
 
   useEffect(() => {
-    if (sessionId) {
-      loadSession();
-    }
+    if (sessionId) loadSession();
   }, [sessionId]);
 
   const loadSession = async () => {
     try {
-      const currentUser = await base44.auth.me();
-      const sessions = await base44.entities.WorkoutSession.filter({ 
-        id: sessionId,
-        created_by: currentUser.email 
-      });
-      if (sessions[0]) {
-        setSession(sessions[0]);
-        setExercises(sessions[0].exercises || []);
+      const { data, error } = await supabase
+        .from('workout_sessions')
+        .select('*')
+        .eq('id', sessionId)
+        .single();
+
+      if (error) throw error;
+      if (data) {
+        setSession(data);
+        setExercises(data.exercises || []);
       }
     } catch (error) {
-      console.error('Error loading session:', error);
+      toast.error("Couldn't load session data");
+      navigate(-1);
     } finally {
       setLoading(false);
     }
   };
 
   const updateExercise = (index, updates) => {
-    const updatedExercises = [...exercises];
-    updatedExercises[index] = { ...updatedExercises[index], ...updates };
-    setExercises(updatedExercises);
+    const updated = [...exercises];
+    updated[index] = { ...updated[index], ...updates };
+    setExercises(updated);
   };
 
-  const toggleComplete = (index) => {
-    const exercise = exercises[index];
-    updateExercise(index, { completed: !exercise.completed, skipped: false });
-  };
-
-  const toggleSkip = (index) => {
-    const exercise = exercises[index];
-    updateExercise(index, { skipped: !exercise.skipped, completed: false });
-  };
-
-  const saveExerciseEdit = (index, data) => {
-    updateExercise(index, data);
-    setEditingExercise(null);
-  };
-
-  const handleAddExercise = (exercises) => {
-      const exerciseArray = Array.isArray(exercises) ? exercises : [exercises];
-
-      const newExercises = exerciseArray.map(exercise => ({
-        exercise_id: exercise.id,
-        exercise_name: exercise.name,
-        completed: false,
-        skipped: false,
-        sets: [{ reps: 0, weight_kg: 0, duration_minutes: 0, distance_km: 0, completed: false }],
-        notes: ''
-      }));
-
-      setExercises([...exercises, ...newExercises]);
-      setShowLibrary(false);
-    };
-
-  const removeExercise = (index) => {
-    setExercises(exercises.filter((_, i) => i !== index));
+  const handleAddExercise = (selected) => {
+    const selectedArray = Array.isArray(selected) ? selected : [selected];
+    const newItems = selectedArray.map(ex => ({
+      exercise_id: ex.id,
+      exercise_name: ex.name,
+      completed: false,
+      skipped: false,
+      sets: [{ reps: 0, weight_kg: 0, completed: false }],
+      notes: ''
+    }));
+    setExercises([...exercises, ...newItems]);
+    setShowLibrary(false);
   };
 
   const handleSave = async () => {
     setSaving(true);
     try {
-      let totalCalories = 0;
-      for (const ex of exercises) {
-        if (ex.completed && ex.sets) {
-          const exerciseData = await base44.entities.Exercise.filter({ id: ex.exercise_id });
-          if (exerciseData[0]) {
-            const caloriesPerMin = exerciseData[0].calories_per_minute || 5;
-            const completedSets = ex.sets.filter(s => s.completed).length;
-            const duration = ex.sets.reduce((sum, s) => sum + (s.duration_minutes || 0), 0) || (completedSets * 2);
-            totalCalories += caloriesPerMin * duration;
-          }
-        }
-      }
+      // Simple calorie estimation logic
+      const totalCalories = exercises.reduce((acc, ex) => {
+        if (!ex.completed) return acc;
+        const setWeight = ex.sets?.length * 15 || 0; // Placeholder logic: 15 cals per exercise
+        return acc + setWeight;
+      }, 0);
+
+      const { error } = await supabase
+        .from('workout_sessions')
+        .update({ 
+          exercises,
+          total_calories_burned: totalCalories 
+        })
+        .eq('id', sessionId);
+
+      if (error) throw error;
       
-      await base44.entities.WorkoutSession.update(sessionId, {
-        exercises,
-        total_calories_burned: totalCalories
-      });
-      
-      navigate(createPageUrl('WorkoutHistory'));
+      toast.success("Workout updated successfully");
+      navigate('/WorkoutHistory');
     } catch (error) {
-      console.error('Error saving workout:', error);
+      toast.error("Failed to save changes");
     } finally {
       setSaving(false);
     }
   };
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-screen bg-[#0a0a0a]">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-[#00d4ff]"></div>
-      </div>
-    );
-  }
-
-  const completedCount = exercises.filter(e => e.completed).length;
-  const skippedCount = exercises.filter(e => e.skipped).length;
-  const totalCount = exercises.length;
+  if (loading) return (
+    <div className="h-screen bg-black flex items-center justify-center">
+      <Loader2 className="animate-spin text-cyan-500" />
+    </div>
+  );
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] pb-8">
+    <div className="min-h-screen bg-black pb-24 text-white">
       {/* Header */}
-      <div className="bg-gradient-to-b from-[#1a1a1a] to-[#0a0a0a] px-6 pt-8 pb-6 sticky top-0 z-10">
-        <button
-          onClick={() => navigate(createPageUrl('WorkoutHistory'))}
-          className="mb-4 flex items-center gap-2 text-[#a0a0a0]"
-        >
-          <ArrowLeft className="w-5 h-5" />
-          <span>Back</span>
+      <div className="bg-zinc-900/50 backdrop-blur-xl px-6 pt-8 pb-6 sticky top-0 z-10 border-b border-zinc-800">
+        <button onClick={() => navigate(-1)} className="mb-4 flex items-center gap-2 text-zinc-500">
+          <ArrowLeft size={20} /> <span className="text-[10px] font-black uppercase tracking-widest">Cancel</span>
         </button>
-        
-        <h1 className="text-3xl font-bold text-white capitalize mb-2">
-          Edit Workout
-        </h1>
-        <p className="text-[#a0a0a0]">
-          {session?.day_of_week} • {format(new Date(session?.date), 'MMM d, yyyy')}
+        <h1 className="text-3xl font-black uppercase italic tracking-tighter">Edit Session</h1>
+        <p className="text-zinc-500 text-xs font-bold uppercase tracking-widest mt-1">
+          {session && format(new Date(session.date), 'EEEE, MMM do')}
         </p>
       </div>
 
-      {/* Exercise List */}
-      <div className="px-6 mt-6 space-y-3">
-        {exercises.map((exercise, index) => (
-          <ExerciseCard
-            key={index}
-            exercise={exercise}
-            index={index}
-            onToggleComplete={() => toggleComplete(index)}
-            onToggleSkip={() => toggleSkip(index)}
-            onEdit={() => setEditingExercise({ index, data: exercise })}
-            onRemove={() => removeExercise(index)}
-          />
-        ))}
-        
-        <button
-          onClick={() => setShowLibrary(true)}
-          className="w-full bg-[#1a1a1a] border-2 border-dashed border-[#2a2a2a] rounded-2xl p-6 flex items-center justify-center gap-3 text-[#a0a0a0] font-medium active:scale-98 transition-transform"
-        >
-          <Plus className="w-6 h-6" />
-          Add Exercise
-        </button>
-      </div>
+      <div className="px-4 mt-6 space-y-4">
+        {exercises.map((ex, idx) => (
+          <div key={idx} className={`bg-zinc-900 border rounded-3xl p-5 transition-all ${ex.completed ? 'border-emerald-500/50' : 'border-zinc-800'}`}>
+            <div className="flex justify-between items-start mb-4">
+              <div className="flex items-center gap-3">
+                <button onClick={() => updateExercise(idx, { completed: !ex.completed, skipped: false })}>
+                  {ex.completed ? <CheckCircle2 className="text-emerald-500" /> : <Circle className="text-zinc-700" />}
+                </button>
+                <h3 className="font-bold text-lg">{ex.exercise_name}</h3>
+              </div>
+              <button onClick={() => setExercises(exercises.filter((_, i) => i !== idx))} className="text-zinc-700 hover:text-red-500">
+                <Trash2 size={18} />
+              </button>
+            </div>
 
-      {/* Save Button */}
-      <div className="px-6 mt-8">
-        <button
-          onClick={handleSave}
-          disabled={saving}
-          className="w-full bg-gradient-to-r from-[#00d4ff] to-[#0099cc] text-white py-4 rounded-xl font-bold text-lg flex items-center justify-center gap-2 glow active:scale-98 transition-transform disabled:opacity-50"
-        >
-          <Save className="w-5 h-5" />
-          {saving ? 'Saving...' : 'Save Changes'}
-        </button>
-      </div>
-
-      {/* Exercise Library Modal */}
-      {showLibrary && (
-        <ExerciseLibrary
-          onSelect={handleAddExercise}
-          onClose={() => setShowLibrary(false)}
-        />
-      )}
-
-      {/* Edit Modal */}
-      {editingExercise && (
-        <ExerciseEditModal
-          exercise={editingExercise.data}
-          onSave={(data) => saveExerciseEdit(editingExercise.index, data)}
-          onClose={() => setEditingExercise(null)}
-        />
-      )}
-    </div>
-  );
-}
-
-function ExerciseCard({ exercise, index, onToggleComplete, onToggleSkip, onEdit, onRemove }) {
-  return (
-    <div
-      className={`bg-[#1a1a1a] border rounded-2xl p-4 transition-all ${
-        exercise.completed
-          ? 'border-[#10b981] bg-[#10b981]/5'
-          : exercise.skipped
-          ? 'border-[#f59e0b] bg-[#f59e0b]/5 opacity-50'
-          : 'border-[#2a2a2a]'
-      }`}
-    >
-      <div className="flex items-start gap-3">
-        <button onClick={onToggleComplete} className="mt-1">
-          {exercise.completed ? (
-            <CheckCircle2 className="w-8 h-8 text-[#10b981]" />
-          ) : (
-            <Circle className="w-8 h-8 text-[#a0a0a0]" />
-          )}
-        </button>
-        
-        <div className="flex-1">
-          <h3 className={`font-bold text-lg mb-2 ${exercise.completed ? 'text-[#10b981]' : 'text-white'}`}>
-            {exercise.exercise_name}
-          </h3>
-          
-          {exercise.sets?.length > 0 && (
-            <div className="space-y-1 mb-3">
-              {exercise.sets.map((set, idx) => (
-                <div key={idx} className="text-[#a0a0a0] text-sm">
-                  Set {idx + 1}: {set.reps > 0 && `${set.reps} reps`}
-                  {set.weight_kg > 0 && ` × ${set.weight_kg}kg`}
-                  {set.duration_minutes > 0 && ` ${set.duration_minutes} min`}
-                  {set.distance_km > 0 && ` ${set.distance_km} km`}
-                  {set.completed && <span className="text-[#10b981] ml-2">✓</span>}
+            {/* Set Summary View */}
+            <div className="flex flex-wrap gap-2 mb-4">
+              {ex.sets?.map((set, sIdx) => (
+                <div key={sIdx} className="bg-black px-3 py-1 rounded-lg border border-zinc-800 text-[10px] font-bold">
+                  {set.weight_kg}kg x {set.reps}
                 </div>
               ))}
             </div>
-          )}
-          
-          <div className="flex gap-2 flex-wrap">
-            <button
-              onClick={onEdit}
-              className="flex items-center gap-2 px-3 py-1.5 bg-[#242424] rounded-lg text-[#00d4ff] text-sm active:scale-95 transition-transform"
+
+            <button 
+              onClick={() => setEditingExercise({ index: idx, data: ex })}
+              className="w-full bg-zinc-800 py-3 rounded-2xl flex items-center justify-center gap-2 text-xs font-black uppercase tracking-widest text-cyan-500"
             >
-              <Edit3 className="w-4 h-4" />
-              Edit
-            </button>
-            <button
-              onClick={onToggleSkip}
-              className={`px-3 py-1.5 rounded-lg text-sm ${
-                exercise.skipped
-                  ? 'bg-[#f59e0b] text-white'
-                  : 'bg-[#242424] text-[#a0a0a0]'
-              }`}
-            >
-              {exercise.skipped ? 'Skipped' : 'Skip'}
-            </button>
-            <button
-              onClick={onRemove}
-              className="flex items-center gap-2 px-3 py-1.5 bg-red-500/10 rounded-lg text-red-400 text-sm active:scale-95 transition-transform"
-            >
-              <Trash2 className="w-4 h-4" />
-              Remove
+              <Edit3 size={14} /> Adjust Sets
             </button>
           </div>
-        </div>
+        ))}
+
+        <button 
+          onClick={() => setShowLibrary(true)}
+          className="w-full border-2 border-dashed border-zinc-800 rounded-3xl py-8 text-zinc-600 font-black uppercase text-[10px] tracking-widest flex flex-col items-center gap-2"
+        >
+          <Plus size={24} /> Add Exercise
+        </button>
       </div>
+
+      {/* Floating Save Bar */}
+      <div className="fixed bottom-0 left-0 right-0 p-6 bg-gradient-to-t from-black via-black/90 to-transparent">
+        <button
+          onClick={handleSave}
+          disabled={saving}
+          className="w-full bg-cyan-500 text-black h-16 rounded-2xl font-black uppercase tracking-widest shadow-xl shadow-cyan-500/20 flex items-center justify-center gap-2"
+        >
+          {saving ? <Loader2 className="animate-spin" /> : <Save size={20} />}
+          {saving ? 'Syncing...' : 'Save Changes'}
+        </button>
+      </div>
+
+      {showLibrary && <ExerciseLibrary onSelect={handleAddExercise} onClose={() => setShowLibrary(false)} />}
+      
+      {editingExercise && (
+        <ExerciseEditModal 
+          exercise={editingExercise.data} 
+          onSave={(data) => {
+            updateExercise(editingExercise.index, data);
+            setEditingExercise(null);
+          }} 
+          onClose={() => setEditingExercise(null)} 
+        />
+      )}
     </div>
   );
 }
 
+// Internal Modal for modifying specific sets
 function ExerciseEditModal({ exercise, onSave, onClose }) {
-  const [sets, setSets] = useState(exercise.sets?.length > 0 ? exercise.sets : [{ reps: 0, weight_kg: 0, duration_minutes: 0, distance_km: 0, completed: false }]);
-  const [notes, setNotes] = useState(exercise.notes || '');
-
-  const addSet = () => {
-    setSets([...sets, { reps: 0, weight_kg: 0, duration_minutes: 0, distance_km: 0, completed: false }]);
-  };
-
-  const removeSet = (index) => {
-    setSets(sets.filter((_, i) => i !== index));
-  };
-
-  const updateSet = (index, field, value) => {
-    const newSets = [...sets];
-    newSets[index] = { ...newSets[index], [field]: field === 'completed' ? value : (parseFloat(value) || 0) };
-    setSets(newSets);
-  };
-
-  const handleSave = () => {
-    onSave({ sets, notes });
-  };
+  const [sets, setSets] = useState(exercise.sets || [{ reps: 0, weight_kg: 0, completed: true }]);
 
   return (
-    <div className="fixed inset-0 bg-black/80 z-50 flex items-end">
-      <div className="bg-[#1a1a1a] w-full rounded-t-3xl max-h-[90vh] overflow-y-auto">
-        <div className="sticky top-0 bg-[#1a1a1a] border-b border-[#2a2a2a] px-6 py-4 flex items-center justify-between">
-          <h3 className="text-xl font-bold text-white">{exercise.exercise_name}</h3>
-          <button onClick={onClose} className="w-10 h-10 rounded-full bg-[#242424] flex items-center justify-center">
-            <X className="w-6 h-6 text-white" />
-          </button>
+    <div className="fixed inset-0 bg-black/90 z-[100] flex items-end sm:items-center justify-center p-4">
+      <div className="bg-zinc-900 w-full max-w-lg rounded-[2rem] border border-zinc-800 overflow-hidden shadow-2xl">
+        <div className="p-6 border-b border-zinc-800 flex justify-between items-center bg-zinc-800/50">
+          <h2 className="font-black uppercase tracking-tighter italic">{exercise.exercise_name}</h2>
+          <button onClick={onClose} className="p-2 bg-black rounded-full"><X size={20} /></button>
         </div>
-
-        <div className="p-6 space-y-4">
-          {sets.map((set, index) => (
-            <div key={index} className="bg-[#242424] border border-[#2a2a2a] rounded-xl p-4">
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-3">
-                  <span className="text-white font-bold">Set {index + 1}</span>
-                  <button
-                    onClick={() => updateSet(index, 'completed', !set.completed)}
-                    className={`px-3 py-1 rounded-lg text-xs ${
-                      set.completed ? 'bg-[#10b981] text-white' : 'bg-[#1a1a1a] text-[#a0a0a0]'
-                    }`}
-                  >
-                    {set.completed ? 'Completed' : 'Mark Complete'}
-                  </button>
-                </div>
-                {sets.length > 1 && (
-                  <button
-                    onClick={() => removeSet(index)}
-                    className="w-8 h-8 rounded-lg bg-red-500/10 flex items-center justify-center text-red-400"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
+        
+        <div className="p-6 max-h-[60vh] overflow-y-auto space-y-4">
+          {sets.map((set, i) => (
+            <div key={i} className="grid grid-cols-3 gap-4 items-center bg-black p-4 rounded-2xl border border-zinc-800">
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-600 block mb-1">KG</label>
+                <input 
+                  type="number" 
+                  value={set.weight_kg} 
+                  onChange={(e) => {
+                    const newSets = [...sets];
+                    newSets[i].weight_kg = e.target.value;
+                    setSets(newSets);
+                  }}
+                  className="bg-zinc-900 w-full text-center py-2 rounded-xl font-bold border border-zinc-800"
+                />
               </div>
-              
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="text-[#a0a0a0] text-xs block mb-1">Reps</label>
-                  <input
-                    type="number"
-                    value={set.reps || ''}
-                    onChange={(e) => updateSet(index, 'reps', e.target.value)}
-                    className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-3 py-2 text-white"
-                  />
-                </div>
-                <div>
-                  <label className="text-[#a0a0a0] text-xs block mb-1">Weight (kg)</label>
-                  <input
-                    type="number"
-                    step="0.5"
-                    value={set.weight_kg || ''}
-                    onChange={(e) => updateSet(index, 'weight_kg', e.target.value)}
-                    className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-3 py-2 text-white"
-                  />
-                </div>
-                <div>
-                  <label className="text-[#a0a0a0] text-xs block mb-1">Duration (min)</label>
-                  <input
-                    type="number"
-                    value={set.duration_minutes || ''}
-                    onChange={(e) => updateSet(index, 'duration_minutes', e.target.value)}
-                    className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-3 py-2 text-white"
-                  />
-                </div>
-                <div>
-                  <label className="text-[#a0a0a0] text-xs block mb-1">Distance (km)</label>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={set.distance_km || ''}
-                    onChange={(e) => updateSet(index, 'distance_km', e.target.value)}
-                    className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl px-3 py-2 text-white"
-                  />
-                </div>
+              <div>
+                <label className="text-[10px] font-black uppercase text-zinc-600 block mb-1">Reps</label>
+                <input 
+                  type="number" 
+                  value={set.reps} 
+                  onChange={(e) => {
+                    const newSets = [...sets];
+                    newSets[i].reps = e.target.value;
+                    setSets(newSets);
+                  }}
+                  className="bg-zinc-900 w-full text-center py-2 rounded-xl font-bold border border-zinc-800"
+                />
               </div>
+              <button onClick={() => setSets(sets.filter((_, idx) => idx !== i))} className="mt-4 text-red-500">
+                <Trash2 size={16} className="mx-auto" />
+              </button>
             </div>
           ))}
-
-          <button
-            onClick={addSet}
-            className="w-full bg-[#242424] border-2 border-dashed border-[#2a2a2a] rounded-xl p-4 flex items-center justify-center gap-2 text-[#a0a0a0]"
+          <button 
+            onClick={() => setSets([...sets, { reps: 0, weight_kg: 0, completed: true }])}
+            className="w-full py-4 border-2 border-dashed border-zinc-800 rounded-2xl text-zinc-500 text-xs font-black uppercase"
           >
-            <Plus className="w-5 h-5" />
-            Add Set
+            + Add Set
           </button>
-
-          <div>
-            <label className="text-[#a0a0a0] text-sm block mb-2">Notes</label>
-            <textarea
-              value={notes}
-              onChange={(e) => setNotes(e.target.value)}
-              className="w-full bg-[#242424] border border-[#2a2a2a] rounded-xl px-4 py-3 text-white h-20"
-            />
-          </div>
         </div>
 
-        <div className="sticky bottom-0 bg-[#1a1a1a] border-t border-[#2a2a2a] px-6 py-4">
-          <button
-            onClick={handleSave}
-            className="w-full bg-gradient-to-r from-[#00d4ff] to-[#0099cc] text-white py-4 rounded-xl font-bold"
+        <div className="p-6 bg-black border-t border-zinc-800">
+          <button 
+            onClick={() => onSave({ ...exercise, sets })}
+            className="w-full bg-white text-black py-4 rounded-2xl font-black uppercase tracking-widest"
           >
-            Save Changes
+            Update Exercise
           </button>
         </div>
       </div>
