@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
+import { supabase } from '@/supabaseClient';
 import { useNavigate } from 'react-router-dom';
-import { createPageUrl } from '../utils';
 import { Plus, ChevronRight, Dumbbell, ArrowLeft } from 'lucide-react';
 
 export default function WeeklyPlan() {
@@ -17,9 +16,26 @@ export default function WeeklyPlan() {
 
   const loadPlans = async () => {
     try {
-      const currentUser = await base44.auth.me();
-      const plans = await base44.entities.WorkoutPlan.filter({ created_by: currentUser.email });
-      setWorkoutPlans(plans);
+      setLoading(true);
+      
+      // 1. Try to load from Local Storage first for instant offline access
+      const localCache = localStorage.getItem('weekly_workout_plans');
+      if (localCache) {
+        setWorkoutPlans(JSON.parse(localCache));
+      }
+
+      // 2. Fetch from Supabase to get the latest
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data: plans, error } = await supabase
+        .from('workout_plans')
+        .select('*')
+        .eq('user_id', user.id);
+
+      if (plans && !error) {
+        setWorkoutPlans(plans);
+        // Update the local cache with the fresh data
+        localStorage.setItem('weekly_workout_plans', JSON.stringify(plans));
+      }
     } catch (error) {
       console.error('Error loading plans:', error);
     } finally {
@@ -28,10 +44,10 @@ export default function WeeklyPlan() {
   };
 
   const getDayPlans = (day) => {
-    return workoutPlans.filter(p => p.day_of_week === day).sort((a, b) => a.order - b.order);
+    return workoutPlans.filter(p => p.day_of_week === day);
   };
 
-  if (loading) {
+  if (loading && workoutPlans.length === 0) {
     return (
       <div className="flex items-center justify-center h-screen bg-[#0a0a0a]">
         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-[#00d4ff]"></div>
@@ -44,7 +60,7 @@ export default function WeeklyPlan() {
       {/* Header */}
       <div className="bg-gradient-to-b from-[#1a1a1a] to-[#0a0a0a] px-6 pt-8 pb-6">
         <button
-          onClick={() => navigate(-1)}
+          onClick={() => navigate('/')}
           className="mb-4 flex items-center gap-2 text-[#a0a0a0]"
         >
           <ArrowLeft className="w-5 h-5" />
@@ -63,8 +79,9 @@ export default function WeeklyPlan() {
           return (
             <button
               key={day}
-              onClick={() => navigate(createPageUrl(`DayPlan?day=${day}`))}
-              className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-2xl p-5 active:scale-98 transition-transform"
+              // This goes to the specific day to add/remove exercises
+              onClick={() => navigate(`/DayPlan?day=${day}`)}
+              className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-2xl p-5 active:scale-95 transition-transform"
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4">
@@ -76,40 +93,12 @@ export default function WeeklyPlan() {
                   <div className="text-left">
                     <h3 className="text-white font-bold text-lg capitalize">{day}</h3>
                     <p className="text-[#a0a0a0] text-sm">
-                      {exerciseCount === 0 ? 'Rest day' : `${exerciseCount} exercise${exerciseCount !== 1 ? 's' : ''}`}
+                      {exerciseCount === 0 ? 'Rest day' : `${exerciseCount} exercises`}
                     </p>
                   </div>
                 </div>
                 
-                <div className="flex items-center gap-2">
-                  {exerciseCount > 0 && (
-                    <div className="flex -space-x-2 mr-2">
-                      {plans.slice(0, 3).map((plan, idx) => (
-                        plan.exercise_image_url ? (
-                          <img
-                            key={idx}
-                            src={plan.exercise_image_url}
-                            alt={plan.exercise_name}
-                            className="w-8 h-8 rounded-full border-2 border-[#1a1a1a] object-cover"
-                          />
-                        ) : (
-                          <div
-                            key={idx}
-                            className="w-8 h-8 rounded-full bg-[#242424] border-2 border-[#1a1a1a] flex items-center justify-center text-xs text-[#a0a0a0]"
-                          >
-                            {plan.exercise_name[0]}
-                          </div>
-                        )
-                      ))}
-                      {exerciseCount > 3 && (
-                        <div className="w-8 h-8 rounded-full bg-[#242424] border-2 border-[#1a1a1a] flex items-center justify-center text-xs text-[#00d4ff]">
-                          +{exerciseCount - 3}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <ChevronRight className="w-6 h-6 text-[#a0a0a0]" />
-                </div>
+                <ChevronRight className="w-6 h-6 text-[#a0a0a0]" />
               </div>
             </button>
           );
