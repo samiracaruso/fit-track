@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
+import { supabase } from '@/supabaseClient';
 import { useNavigate } from 'react-router-dom';
-import { createPageUrl } from '../utils';
-import { ArrowLeft, ChevronLeft, ChevronRight } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Loader2 } from 'lucide-react';
 import { format, startOfMonth, endOfMonth, eachDayOfInterval, startOfWeek, endOfWeek, isSameMonth, isSameDay } from 'date-fns';
 
 export default function Calendar() {
@@ -17,15 +16,29 @@ export default function Calendar() {
 
   const loadSessions = async () => {
     try {
-      const currentUser = await base44.auth.me();
-      const data = await base44.entities.WorkoutSession.filter(
-        { created_by: currentUser.email },
-        '-created_date',
-        500
-      );
-      setSessions(data.filter(s => s.status === 'completed'));
+      // 1. Instant Load from Local Storage
+      const cachedSessions = localStorage.getItem('workout_history');
+      if (cachedSessions) {
+        setSessions(JSON.parse(cachedSessions));
+        setLoading(false); // Stop spinner early if we have data
+      }
+
+      // 2. Background Sync with Supabase
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data, error } = await supabase
+        .from('workout_sessions')
+        .select('date, status')
+        .eq('user_id', user.id)
+        .eq('status', 'completed');
+
+      if (error) throw error;
+
+      if (data) {
+        setSessions(data);
+        localStorage.setItem('workout_history', JSON.stringify(data));
+      }
     } catch (error) {
-      console.error('Error loading sessions:', error);
+      console.log('Using offline calendar data');
     } finally {
       setLoading(false);
     }
@@ -45,122 +58,116 @@ export default function Calendar() {
     return sessions.some(s => s.date === dateStr);
   };
 
-  const handlePrevMonth = () => {
-    setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1));
-  };
-
-  const handleNextMonth = () => {
-    setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1));
-  };
-
   const handleDateClick = (date) => {
     const dateStr = format(date, 'yyyy-MM-dd');
-    navigate(createPageUrl(`StartWorkout?date=${dateStr}`));
+    const dayName = format(date, 'EEEE').toLowerCase();
+    // Navigate to the specific day's plan
+    navigate(`/DayPlan?day=${dayName}&date=${dateStr}`);
   };
 
   const calendarDays = getCalendarDays();
   const today = new Date();
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-screen bg-[#0a0a0a]">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-[#00d4ff]"></div>
-      </div>
-    );
-  }
-
   return (
-    <div className="min-h-screen bg-[#0a0a0a] pb-8">
+    <div className="min-h-screen bg-black pb-12 text-white">
       {/* Header */}
-      <div className="bg-gradient-to-b from-[#1a1a1a] to-[#0a0a0a] px-6 pt-8 pb-6 sticky top-0 z-10">
+      <div className="bg-zinc-900/50 backdrop-blur-xl px-6 pt-8 pb-6 sticky top-0 z-10 border-b border-zinc-800">
         <button
           onClick={() => navigate(-1)}
-          className="mb-4 flex items-center gap-2 text-[#a0a0a0]"
+          className="mb-4 flex items-center gap-2 text-zinc-500 hover:text-white transition-colors"
         >
           <ArrowLeft className="w-5 h-5" />
-          <span>Back</span>
+          <span className="text-xs font-black uppercase tracking-widest">Back</span>
         </button>
         
         <div className="flex items-center justify-between">
-          <h1 className="text-3xl font-bold text-white">Calendar</h1>
-          <div className="flex items-center gap-2">
+          <h1 className="text-3xl font-black uppercase italic tracking-tighter">Activity</h1>
+          <div className="flex items-center gap-1 bg-black p-1 rounded-full border border-zinc-800">
             <button
-              onClick={handlePrevMonth}
-              className="w-10 h-10 rounded-full bg-[#1a1a1a] border border-[#2a2a2a] flex items-center justify-center active:scale-95 transition-transform"
+              onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1))}
+              className="w-10 h-10 rounded-full flex items-center justify-center active:bg-zinc-800 transition-colors"
             >
-              <ChevronLeft className="w-5 h-5 text-white" />
+              <ChevronLeft size={20} />
             </button>
-            <span className="text-white font-medium min-w-[120px] text-center">
-              {format(currentMonth, 'MMMM yyyy')}
+            <span className="text-[10px] font-black uppercase tracking-widest min-w-[100px] text-center">
+              {format(currentMonth, 'MMM yyyy')}
             </span>
             <button
-              onClick={handleNextMonth}
-              className="w-10 h-10 rounded-full bg-[#1a1a1a] border border-[#2a2a2a] flex items-center justify-center active:scale-95 transition-transform"
+              onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() + 1))}
+              className="w-10 h-10 rounded-full flex items-center justify-center active:bg-zinc-800 transition-colors"
             >
-              <ChevronRight className="w-5 h-5 text-white" />
+              <ChevronRight size={20} />
             </button>
           </div>
         </div>
       </div>
 
       {/* Calendar Grid */}
-      <div className="px-6 mt-6">
+      <div className="px-4 mt-8">
         {/* Day Headers */}
-        <div className="grid grid-cols-7 gap-2 mb-2">
-          {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => (
-            <div key={day} className="text-center text-[#a0a0a0] text-xs font-medium py-2">
+        <div className="grid grid-cols-7 mb-4">
+          {['M', 'T', 'W', 'T', 'F', 'S', 'S'].map((day, i) => (
+            <div key={i} className="text-center text-[10px] font-black text-zinc-600 uppercase">
               {day}
             </div>
           ))}
         </div>
 
-        {/* Calendar Days */}
-        <div className="grid grid-cols-7 gap-2">
+        {/* Days */}
+        <div className="grid grid-cols-7 gap-1">
           {calendarDays.map((date, idx) => {
             const isCurrentMonth = isSameMonth(date, currentMonth);
             const isToday = isSameDay(date, today);
-            const hasWorkout = hasSession(date);
+            const isCompleted = hasSession(date);
             
             return (
               <button
                 key={idx}
                 onClick={() => handleDateClick(date)}
                 disabled={!isCurrentMonth}
-                className={`aspect-square rounded-2xl border flex flex-col items-center justify-center transition-all ${
-                  !isCurrentMonth
-                    ? 'border-transparent opacity-30'
-                    : isToday
-                    ? 'border-[#00d4ff] bg-[#00d4ff]/10 glow'
-                    : hasWorkout
-                    ? 'border-[#10b981] bg-[#10b981]/10'
-                    : 'border-[#2a2a2a] bg-transparent active:scale-95'
+                className={`aspect-square rounded-xl flex flex-col items-center justify-center relative transition-all active:scale-90 ${
+                  !isCurrentMonth ? 'opacity-0 pointer-events-none' : ''
+                } ${
+                  isToday 
+                  ? 'bg-cyan-500 text-black shadow-[0_0_15px_rgba(6,182,212,0.4)]' 
+                  : isCompleted 
+                  ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-500' 
+                  : 'bg-zinc-900 text-zinc-500 border border-zinc-800'
                 }`}
               >
-                <span className={`text-sm font-bold ${
-                  isToday ? 'text-[#00d4ff]' : isCurrentMonth ? 'text-white' : 'text-[#a0a0a0]'
-                }`}>
+                <span className="text-sm font-black">
                   {format(date, 'd')}
                 </span>
-                {hasWorkout && (
-                  <div className="w-1.5 h-1.5 rounded-full bg-[#10b981] mt-1" />
+                {isCompleted && !isToday && (
+                  <div className="absolute bottom-1.5 w-1 h-1 rounded-full bg-emerald-500" />
                 )}
               </button>
             );
           })}
         </div>
 
-        {/* Legend */}
-        <div className="mt-6 flex items-center justify-center gap-6 text-sm">
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-[#00d4ff]" />
-            <span className="text-[#a0a0a0]">Today</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-3 h-3 rounded-full bg-[#10b981]" />
-            <span className="text-[#a0a0a0]">Completed</span>
-          </div>
+        {/* Stats Summary Card */}
+        <div className="mt-10 p-6 bg-zinc-900 rounded-3xl border border-zinc-800">
+           <div className="flex justify-between items-center mb-4">
+              <h3 className="text-xs font-black uppercase tracking-widest text-zinc-500">Monthly Intensity</h3>
+              <span className="text-cyan-500 font-black italic">{sessions.filter(s => isSameMonth(new Date(s.date), currentMonth)).length} Sessions</span>
+           </div>
+           <div className="h-2 w-full bg-black rounded-full overflow-hidden">
+              <div 
+                className="h-full bg-gradient-to-r from-cyan-500 to-emerald-500 transition-all duration-1000" 
+                style={{ width: `${Math.min((sessions.length / 20) * 100, 100)}%` }}
+              />
+           </div>
+           <p className="text-[10px] text-zinc-600 mt-2 uppercase font-bold text-center">Goal: 20 sessions / month</p>
         </div>
       </div>
+
+      {loading && (
+        <div className="fixed bottom-10 left-1/2 -translate-x-1/2 bg-zinc-900 px-4 py-2 rounded-full border border-zinc-800 flex items-center gap-2 shadow-2xl">
+          <Loader2 className="animate-spin text-cyan-500" size={16} />
+          <span className="text-[10px] font-black uppercase">Syncing...</span>
+        </div>
+      )}
     </div>
   );
 }
