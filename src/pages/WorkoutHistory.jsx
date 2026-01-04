@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
+import { supabase } from '@/supabaseClient'; // Swapped to Supabase
 import { useNavigate } from 'react-router-dom';
 import { createPageUrl } from '../utils';
 import { ArrowLeft, Calendar, ChevronDown, ChevronUp, Activity, MoreVertical, Edit2, Trash2 } from 'lucide-react';
@@ -20,30 +20,42 @@ export default function WorkoutHistory() {
 
   const loadSessions = async () => {
     try {
-      const currentUser = await base44.auth.me();
-      const data = await base44.entities.WorkoutSession.filter(
-        { created_by: currentUser.email },
-        '-created_date',
-        100
-      );
+      setLoading(true);
+      // 1. Get current user
+      const { data: { user } } = await supabase.auth.getUser();
       
-      // Get all exercises to fetch images
-      const allExercises = await base44.entities.Exercise.list();
+      // 2. Fetch completed sessions from Supabase
+      const { data: sessionData, error: sessionError } = await supabase
+        .from('workout_sessions')
+        .select('*')
+        .eq('user_id', user.id)
+        .eq('status', 'completed')
+        .order('date', { ascending: false });
+
+      if (sessionError) throw sessionError;
+      
+      // 3. Get exercise library to fetch the latest images
+      const { data: allExercises, error: exError } = await supabase
+        .from('exercises')
+        .select('id, image_url');
+
+      if (exError) throw exError;
+
       const exerciseMap = new Map();
       allExercises.forEach(ex => exerciseMap.set(ex.id, ex));
       
-      // Update session exercises with images from library
-      const sessionsWithImages = data.map(session => ({
+      // 4. Update session exercises with fresh images from the library
+      const sessionsWithImages = sessionData.map(session => ({
         ...session,
-        exercises: session.exercises?.map(ex => ({
+        exercises: (session.exercises || []).map(ex => ({
           ...ex,
           exercise_image_url: exerciseMap.get(ex.exercise_id)?.image_url || ex.exercise_image_url || ''
-        })) || []
+        }))
       }));
       
-      setSessions(sessionsWithImages.filter(s => s.status === 'completed'));
+      setSessions(sessionsWithImages);
     } catch (error) {
-      console.error('Error loading sessions:', error);
+      console.error('Error loading history:', error);
     } finally {
       setLoading(false);
     }
@@ -58,12 +70,17 @@ export default function WorkoutHistory() {
 
   const handleExerciseClick = async (exerciseId) => {
     try {
-      const exercises = await base44.entities.Exercise.filter({ id: exerciseId });
-      if (exercises[0]) {
-        setViewingExercise(exercises[0]);
+      const { data, error } = await supabase
+        .from('exercises')
+        .select('*')
+        .eq('id', exerciseId)
+        .single();
+      
+      if (data) {
+        setViewingExercise(data);
       }
     } catch (error) {
-      console.error('Error loading exercise:', error);
+      console.error('Error loading exercise detail:', error);
     }
   };
 
@@ -72,11 +89,17 @@ export default function WorkoutHistory() {
   };
 
   const handleDeleteSession = async (sessionId) => {
-    if (confirm('Delete this workout? This cannot be undone.')) {
+    if (confirm('Delete this workout from your history? This cannot be undone.')) {
       try {
-        await base44.entities.WorkoutSession.delete(sessionId);
-        loadSessions();
+        const { error } = await supabase
+          .from('workout_sessions')
+          .delete()
+          .eq('id', sessionId);
+        
+        if (error) throw error;
+        loadSessions(); // Refresh list
       } catch (error) {
+        alert('Could not delete workout. Please try again.');
         console.error('Error deleting session:', error);
       }
     }
@@ -209,13 +232,10 @@ export default function WorkoutHistory() {
                 {isExpanded && completedExercises.length > 0 && (
                   <div className="border-t border-[#2a2a2a] px-4 py-3 space-y-3">
                     {completedExercises.map((exercise, idx) => {
-                      // Calculate stats from all sets (not just completed ones)
                       const allSets = exercise.sets || [];
                       const totalSets = allSets.length;
                       const totalReps = allSets.reduce((sum, s) => sum + (s.reps || 0), 0);
                       const maxWeight = Math.max(...allSets.map(s => s.weight_kg || 0), 0);
-                      const totalDuration = allSets.reduce((sum, s) => sum + (s.duration_minutes || 0), 0);
-                      const totalDistance = allSets.reduce((sum, s) => sum + (s.distance_km || 0), 0);
                       
                       return (
                         <div key={idx} className="bg-[#242424] rounded-xl p-3">
@@ -242,7 +262,6 @@ export default function WorkoutHistory() {
                                 </h4>
                               </button>
 
-                              {/* Exercise Stats Summary */}
                               <div className="flex flex-wrap gap-2 mb-2">
                                 {totalSets > 0 && (
                                   <span className="px-2 py-1 bg-[#1a1a1a] rounded-lg text-xs text-[#00d4ff]">
@@ -259,16 +278,6 @@ export default function WorkoutHistory() {
                                     {maxWeight}kg max
                                   </span>
                                 )}
-                                {totalDuration > 0 && (
-                                  <span className="px-2 py-1 bg-[#1a1a1a] rounded-lg text-xs text-[#00d4ff]">
-                                    {totalDuration} min
-                                  </span>
-                                )}
-                                {totalDistance > 0 && (
-                                  <span className="px-2 py-1 bg-[#1a1a1a] rounded-lg text-xs text-[#00d4ff]">
-                                    {totalDistance} km
-                                  </span>
-                                )}
                               </div>
 
                               {allSets.length > 0 && (
@@ -279,16 +288,9 @@ export default function WorkoutHistory() {
                                       {set.reps > 0 && ` ${set.reps} reps`}
                                       {set.weight_kg > 0 && ` × ${set.weight_kg}kg`}
                                       {set.duration_minutes > 0 && ` ${set.duration_minutes} min`}
-                                      {set.distance_km > 0 && ` ${set.distance_km} km`}
-                                      {set.floors > 0 && ` ${set.floors} floors`}
-                                      {set.steps > 0 && ` ${set.steps} steps`}
                                     </div>
                                   ))}
                                 </div>
-                              )}
-
-                              {exercise.notes && (
-                                <p className="text-[#a0a0a0] text-sm mt-2 italic">{exercise.notes}</p>
                               )}
                             </div>
                           </div>
