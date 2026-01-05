@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { supabase } from '@/supabaseClient'; // Swapped to Supabase
+import { supabase } from '@/supabaseClient';
+import { localDB } from '@/api/localDB';
 import { useNavigate } from 'react-router-dom';
-import { createPageUrl } from '../utils';
-import { ArrowLeft, Calendar, ChevronDown, ChevronUp, Activity, MoreVertical, Edit2, Trash2 } from 'lucide-react';
+import { ArrowLeft, Calendar, ChevronDown, ChevronUp, Activity, MoreVertical, Edit2, Trash2, Loader2, Trophy } from 'lucide-react';
 import { format } from 'date-fns';
 import ExerciseDetailModal from '../components/ExerciseDetailModal';
 
@@ -21,39 +21,28 @@ export default function WorkoutHistory() {
   const loadSessions = async () => {
     try {
       setLoading(true);
-      // 1. Get current user
-      const { data: { user } } = await supabase.auth.getUser();
       
-      // 2. Fetch completed sessions from Supabase
-      const { data: sessionData, error: sessionError } = await supabase
+      // 1. Load from Dexie first (Instant UI)
+      const localSessions = await localDB.history
+        .orderBy('date')
+        .reverse()
+        .toArray();
+      setSessions(localSessions);
+
+      // 2. Refresh from Supabase
+      const { data: { user } } = await supabase.auth.getUser();
+      const { data: remoteSessions, error } = await supabase
         .from('workout_sessions')
         .select('*')
         .eq('user_id', user.id)
-        .eq('status', 'completed')
         .order('date', { ascending: false });
 
-      if (sessionError) throw sessionError;
-      
-      // 3. Get exercise library to fetch the latest images
-      const { data: allExercises, error: exError } = await supabase
-        .from('exercises')
-        .select('id, image_url');
-
-      if (exError) throw exError;
-
-      const exerciseMap = new Map();
-      allExercises.forEach(ex => exerciseMap.set(ex.id, ex));
-      
-      // 4. Update session exercises with fresh images from the library
-      const sessionsWithImages = sessionData.map(session => ({
-        ...session,
-        exercises: (session.exercises || []).map(ex => ({
-          ...ex,
-          exercise_image_url: exerciseMap.get(ex.exercise_id)?.image_url || ex.exercise_image_url || ''
-        }))
-      }));
-      
-      setSessions(sessionsWithImages);
+      if (remoteSessions && !error) {
+        setSessions(remoteSessions);
+        // Sync Dexie to match Supabase
+        await localDB.history.clear();
+        await localDB.history.bulkAdd(remoteSessions);
+      }
     } catch (error) {
       console.error('Error loading history:', error);
     } finally {
@@ -69,234 +58,111 @@ export default function WorkoutHistory() {
   };
 
   const handleExerciseClick = async (exerciseId) => {
-    try {
-      const { data, error } = await supabase
-        .from('exercises')
-        .select('*')
-        .eq('id', exerciseId)
-        .single();
-      
-      if (data) {
-        setViewingExercise(data);
-      }
-    } catch (error) {
-      console.error('Error loading exercise detail:', error);
-    }
-  };
-
-  const handleEditSession = (session) => {
-    navigate(createPageUrl(`EditWorkout?sessionId=${session.id}`));
+    const { data } = await supabase.from('exercises').select('*').eq('id', exerciseId).single();
+    if (data) setViewingExercise(data);
   };
 
   const handleDeleteSession = async (sessionId) => {
-    if (confirm('Delete this workout from your history? This cannot be undone.')) {
-      try {
-        const { error } = await supabase
-          .from('workout_sessions')
-          .delete()
-          .eq('id', sessionId);
-        
-        if (error) throw error;
-        loadSessions(); // Refresh list
-      } catch (error) {
-        alert('Could not delete workout. Please try again.');
-        console.error('Error deleting session:', error);
-      }
+    if (!confirm('Delete this workout permanently?')) return;
+    try {
+      await localDB.history.delete(sessionId);
+      await supabase.from('workout_sessions').delete().eq('id', sessionId);
+      setSessions(sessions.filter(s => s.id !== sessionId));
+    } catch (error) {
+      console.error('Delete failed:', error);
     }
   };
 
-  if (loading) {
+  if (loading && sessions.length === 0) {
     return (
-      <div className="flex items-center justify-center h-screen bg-[#0a0a0a]">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-[#00d4ff]"></div>
+      <div className="h-screen bg-black flex items-center justify-center">
+        <Loader2 className="animate-spin text-cyan-500" size={32} />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] pb-8">
+    <div className="min-h-screen bg-black text-white pb-8">
       {/* Header */}
-      <div className="bg-gradient-to-b from-[#1a1a1a] to-[#0a0a0a] px-6 pt-8 pb-6">
-        <button
-          onClick={() => navigate(-1)}
-          className="mb-4 flex items-center gap-2 text-[#a0a0a0]"
-        >
-          <ArrowLeft className="w-5 h-5" />
-          <span>Back</span>
+      <div className="bg-zinc-900/50 backdrop-blur-xl px-6 pt-8 pb-6 border-b border-zinc-800">
+        <button onClick={() => navigate(-1)} className="mb-4 flex items-center gap-2 text-zinc-500">
+          <ArrowLeft size={20} /> 
+          <span className="text-[10px] font-black uppercase tracking-widest">Back</span>
         </button>
-        
-        <h1 className="text-3xl font-bold text-white mb-2">Workout History</h1>
-        <p className="text-[#a0a0a0]">{sessions.length} completed workouts</p>
+        <h1 className="text-3xl font-black uppercase italic tracking-tighter">Activity <span className="text-cyan-500">Log</span></h1>
+        <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">{sessions.length} Sessions Completed</p>
       </div>
 
-      {/* Sessions List */}
-      <div className="px-6 mt-6 space-y-3">
+      <div className="px-6 mt-6 space-y-4">
         {sessions.length === 0 ? (
-          <div className="text-center py-12">
-            <div className="w-20 h-20 bg-[#1a1a1a] rounded-full flex items-center justify-center mx-auto mb-4">
-              <Activity className="w-10 h-10 text-[#a0a0a0]" />
-            </div>
-            <h3 className="text-white font-bold text-xl mb-2">No workouts yet</h3>
-            <p className="text-[#a0a0a0]">Complete your first workout to see it here</p>
+          <div className="text-center py-20 bg-zinc-900 rounded-3xl border-2 border-dashed border-zinc-800">
+             <Activity className="mx-auto mb-4 text-zinc-800" size={48} />
+             <p className="text-zinc-500 font-black uppercase text-xs tracking-widest">No history found</p>
           </div>
         ) : (
           sessions.map((session) => {
             const isExpanded = expandedSessions[session.id];
-            const completedExercises = session.exercises?.filter(e => e.completed) || [];
+            const completedExercises = session.exercises || [];
             
             return (
-              <div
-                key={session.id}
-                className="bg-[#1a1a1a] border border-[#2a2a2a] rounded-2xl overflow-hidden"
-              >
-                {/* Session Header */}
-                <div className="p-4 flex items-start gap-3">
-                  <button
-                    onClick={() => toggleExpanded(session.id)}
-                    className="flex-1 flex items-start active:opacity-70 transition-opacity text-left"
-                  >
-                    <div className="flex-1">
-                      <div className="flex items-center gap-3 mb-2">
-                        <h3 className="text-white font-bold text-lg capitalize">{session.day_of_week}</h3>
-                        {isExpanded ? (
-                          <ChevronUp className="w-5 h-5 text-[#a0a0a0]" />
-                        ) : (
-                          <ChevronDown className="w-5 h-5 text-[#a0a0a0]" />
-                        )}
-                      </div>
-                      <div className="flex items-center gap-2 text-[#a0a0a0] text-sm mb-3">
-                        <Calendar className="w-4 h-4" />
-                        <span>{format(new Date(session.date), 'EEEE, MMM d, yyyy')}</span>
-                      </div>
-                      
-                      <div className="flex gap-4">
-                        <div>
-                          <span className="text-white font-bold">{completedExercises.length}</span>
-                          <span className="text-[#a0a0a0] text-sm ml-1">exercises</span>
-                        </div>
-                        {session.total_calories_burned > 0 && (
-                          <div>
-                            <span className="text-[#00d4ff] font-bold">{Math.round(session.total_calories_burned)}</span>
-                            <span className="text-[#a0a0a0] text-sm ml-1">kcal</span>
-                          </div>
-                        )}
-                      </div>
+              <div key={session.id} className="bg-zinc-900 border border-zinc-800 rounded-3xl overflow-hidden transition-all">
+                <div className="p-5 flex items-start justify-between">
+                  <div className="flex-1 cursor-pointer" onClick={() => toggleExpanded(session.id)}>
+                    <div className="flex items-center gap-2 mb-1">
+                      <h3 className="text-lg font-black uppercase italic tracking-tighter">{session.day_of_week}</h3>
+                      {isExpanded ? <ChevronUp size={16} className="text-cyan-500"/> : <ChevronDown size={16} className="text-zinc-600"/>}
                     </div>
-                  </button>
-                  
-                  <div className="relative">
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setMenuOpen(menuOpen === session.id ? null : session.id);
-                      }}
-                      className="w-8 h-8 rounded-lg bg-[#242424] flex items-center justify-center text-[#a0a0a0] hover:text-white active:scale-95 transition-all"
-                    >
-                      <MoreVertical className="w-5 h-5" />
-                    </button>
+                    <div className="flex items-center gap-2 text-[10px] font-bold text-zinc-500 uppercase tracking-widest mb-4">
+                      <Calendar size={12} />
+                      {format(new Date(session.date), 'MMM d, yyyy')}
+                    </div>
                     
-                    {menuOpen === session.id && (
-                      <>
-                        <div 
-                          className="fixed inset-0 z-10" 
-                          onClick={() => setMenuOpen(null)}
-                        />
-                        <div className="fixed right-6 mt-2 w-48 bg-[#1a1a1a] border border-[#2a2a2a] rounded-xl shadow-xl z-20 overflow-hidden">
-                          <button
-                            onClick={() => {
-                              handleEditSession(session);
-                              setMenuOpen(null);
-                            }}
-                            className="w-full flex items-center gap-3 px-4 py-3 text-white hover:bg-[#242424] transition-colors"
-                          >
-                            <Edit2 className="w-4 h-4" />
-                            Edit Workout
-                          </button>
-                          <button
-                            onClick={() => {
-                              handleDeleteSession(session.id);
-                              setMenuOpen(null);
-                            }}
-                            className="w-full flex items-center gap-3 px-4 py-3 text-red-400 hover:bg-[#242424] transition-colors"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                            Delete Workout
-                          </button>
-                        </div>
-                      </>
-                    )}
+                    <div className="flex gap-4">
+                      <div className="bg-black/40 px-3 py-1.5 rounded-xl border border-zinc-800">
+                        <span className="text-cyan-500 font-black mr-1">{completedExercises.length}</span>
+                        <span className="text-[10px] text-zinc-500 font-bold uppercase">Exercises</span>
+                      </div>
+                      {session.total_volume && (
+                         <div className="bg-black/40 px-3 py-1.5 rounded-xl border border-zinc-800">
+                            <span className="text-emerald-500 font-black mr-1">{session.total_volume}</span>
+                            <span className="text-[10px] text-zinc-500 font-bold uppercase">kg</span>
+                         </div>
+                      )}
+                    </div>
                   </div>
+
+                  <button 
+                    onClick={() => handleDeleteSession(session.id)}
+                    className="p-2 text-zinc-700 hover:text-red-500 transition-colors"
+                  >
+                    <Trash2 size={18} />
+                  </button>
                 </div>
 
-                {/* Expanded Exercise List */}
-                {isExpanded && completedExercises.length > 0 && (
-                  <div className="border-t border-[#2a2a2a] px-4 py-3 space-y-3">
-                    {completedExercises.map((exercise, idx) => {
-                      const allSets = exercise.sets || [];
-                      const totalSets = allSets.length;
-                      const totalReps = allSets.reduce((sum, s) => sum + (s.reps || 0), 0);
-                      const maxWeight = Math.max(...allSets.map(s => s.weight_kg || 0), 0);
-                      
-                      return (
-                        <div key={idx} className="bg-[#242424] rounded-xl p-3">
-                          <div className="flex gap-3">
-                            {exercise.exercise_image_url ? (
-                              <img
-                                src={exercise.exercise_image_url}
-                                alt={exercise.exercise_name}
-                                className="w-16 h-16 rounded-xl object-cover flex-shrink-0"
-                              />
-                            ) : (
-                              <div className="w-16 h-16 rounded-xl bg-[#1a1a1a] flex items-center justify-center text-[#a0a0a0] font-bold flex-shrink-0">
-                                {exercise.exercise_name[0]}
-                              </div>
-                            )}
-                            
-                            <div className="flex-1">
-                              <button
-                                onClick={() => handleExerciseClick(exercise.exercise_id)}
-                                className="text-left w-full mb-2"
-                              >
-                                <h4 className="text-white font-bold hover:text-[#00d4ff] transition-colors">
-                                  {exercise.exercise_name}
-                                </h4>
-                              </button>
-
-                              <div className="flex flex-wrap gap-2 mb-2">
-                                {totalSets > 0 && (
-                                  <span className="px-2 py-1 bg-[#1a1a1a] rounded-lg text-xs text-[#00d4ff]">
-                                    {totalSets} set{totalSets !== 1 ? 's' : ''}
-                                  </span>
-                                )}
-                                {totalReps > 0 && (
-                                  <span className="px-2 py-1 bg-[#1a1a1a] rounded-lg text-xs text-[#00d4ff]">
-                                    {totalReps} reps
-                                  </span>
-                                )}
-                                {maxWeight > 0 && (
-                                  <span className="px-2 py-1 bg-[#1a1a1a] rounded-lg text-xs text-[#00d4ff]">
-                                    {maxWeight}kg max
-                                  </span>
-                                )}
-                              </div>
-
-                              {allSets.length > 0 && (
-                                <div className="space-y-1">
-                                  {allSets.map((set, setIdx) => (
-                                    <div key={setIdx} className="text-[#a0a0a0] text-sm">
-                                      Set {setIdx + 1}:
-                                      {set.reps > 0 && ` ${set.reps} reps`}
-                                      {set.weight_kg > 0 && ` × ${set.weight_kg}kg`}
-                                      {set.duration_minutes > 0 && ` ${set.duration_minutes} min`}
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
-                          </div>
+                {isExpanded && (
+                  <div className="px-5 pb-5 space-y-3 border-t border-zinc-800/50 pt-4">
+                    {completedExercises.map((ex, idx) => (
+                      <div key={idx} className="bg-black/30 rounded-2xl p-4 border border-zinc-800">
+                        <div className="flex justify-between items-center mb-2">
+                           <h4 className="font-black uppercase italic text-sm text-zinc-300">{ex.name || ex.exercise_name}</h4>
+                           <Trophy size={14} className="text-amber-500/50" />
                         </div>
-                      );
-                    })}
+                        <div className="grid grid-cols-3 gap-2">
+                           <div className="text-center">
+                              <p className="text-[10px] text-zinc-600 font-black uppercase">Sets</p>
+                              <p className="text-sm font-bold">{ex.sets?.length || 0}</p>
+                           </div>
+                           <div className="text-center">
+                              <p className="text-[10px] text-zinc-600 font-black uppercase">Best</p>
+                              <p className="text-sm font-bold">{Math.max(...(ex.sets?.map(s => s.weight_kg) || [0]))}kg</p>
+                           </div>
+                           <div className="text-center">
+                              <p className="text-[10px] text-zinc-600 font-black uppercase">Status</p>
+                              <p className="text-[10px] font-black text-emerald-500 uppercase">Done</p>
+                           </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
@@ -305,7 +171,6 @@ export default function WorkoutHistory() {
         )}
       </div>
 
-      {/* Exercise Detail Modal */}
       {viewingExercise && (
         <ExerciseDetailModal
           exercise={viewingExercise}
