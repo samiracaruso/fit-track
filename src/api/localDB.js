@@ -2,13 +2,13 @@ import Dexie from 'dexie';
 
 export const db = new Dexie('WorkoutAppDB');
 
-// Update version to include sync_queue
+// Version 4 Schema
 db.version(4).stores({
   plans: '++id, day_of_week, exercise_id',
   history: 'id, date, status',
   active_session: 'id',
   exercises: 'id, name, type',
-  sync_queue: '++id, table, action, payload' // Store pending cloud updates
+  sync_queue: '++id, table, action, payload' 
 });
 
 export const localDB = {
@@ -26,31 +26,40 @@ export const localDB = {
     const queue = await db.sync_queue.toArray();
     if (queue.length === 0) return;
 
-    console.log(`Checking sync queue: ${queue.length} items pending...`);
-
     for (const item of queue) {
       try {
         let error;
-        // Map the action to Supabase calls
+        
+        // IMPORTANT: Map local Dexie names to Supabase table names
+        const remoteTable = item.table === 'plans' ? 'workout_plans' : 
+                            item.table === 'history' ? 'workout_sessions' : 
+                            item.table;
+
         if (item.action === 'INSERT') {
-          ({ error } = await supabase.from(item.table).insert(item.payload));
+          ({ error } = await supabase.from(remoteTable).insert(item.payload));
         } else if (item.action === 'UPDATE') {
-          ({ error } = await supabase.from(item.table).update(item.payload).eq('id', item.payload.id));
+          ({ error } = await supabase.from(remoteTable).update(item.payload).eq('id', item.payload.id));
         } else if (item.action === 'DELETE') {
-          ({ error } = await supabase.from(item.table).delete().eq('id', item.payload.id));
+          ({ error } = await supabase.from(remoteTable).delete().eq('id', item.payload.id));
         }
 
         if (!error) {
           await db.sync_queue.delete(item.id);
-          console.log(`Successfully synced ${item.table} ${item.action}`);
-        } else {
-          console.error("Supabase sync error:", error);
+          console.log(`Successfully synced ${remoteTable}`);
         }
       } catch (err) {
-        console.error("Network error during sync attempt:", err);
-        break; // Stop processing if we're still offline
+        console.error("Sync error:", err);
+        break; 
       }
     }
+  },
+
+  // --- NEW: LINK DATA TO USER ---
+  // Call this in App.jsx or Home.jsx right after login
+  async associateLocalDataWithUser(userId) {
+    // Updates any local records that don't have a user_id yet
+    await db.plans.where('user_id').equals(undefined).modify({ user_id: userId });
+    await db.history.where('user_id').equals(undefined).modify({ user_id: userId });
   },
 
   // --- HISTORY METHODS ---
@@ -77,7 +86,17 @@ export const localDB = {
 
   // --- PLANS & EXERCISES ---
   async getPlanByDay(day) {
+    // UsingequalsIgnoreCase to handle 'Monday' vs 'monday'
     return await db.plans.where('day_of_week').equalsIgnoreCase(day).toArray();
+  },
+
+  async savePlan(day, plans) {
+    return await db.transaction('rw', db.plans, async () => {
+      await db.plans.where('day_of_week').equalsIgnoreCase(day).delete();
+      if (plans.length > 0) {
+        await db.plans.bulkAdd(plans);
+      }
+    });
   },
 
   async getAllExercises() {
