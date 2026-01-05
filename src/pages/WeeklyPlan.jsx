@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '@/supabaseClient';
+import { localDB } from '@/api/localDB';
 import { useNavigate } from 'react-router-dom';
-import { Plus, ChevronRight, Dumbbell, ArrowLeft } from 'lucide-react';
+import { ChevronRight, Dumbbell, ArrowLeft, Loader2 } from 'lucide-react';
 
 export default function WeeklyPlan() {
   const navigate = useNavigate();
@@ -18,13 +19,17 @@ export default function WeeklyPlan() {
     try {
       setLoading(true);
       
-      // 1. Try to load from Local Storage first for instant offline access
-      const localCache = localStorage.getItem('weekly_workout_plans');
-      if (localCache) {
-        setWorkoutPlans(JSON.parse(localCache));
+      // 1. Try to load from Dexie for instant access
+      const cachedPlans = await localDB.plans.toArray();
+      if (cachedPlans.length > 0) {
+        // Flatten the Dexie structure (which stores by day) back into a flat list for getDayPlans
+        const flattened = cachedPlans.flatMap(dayEntry => 
+          dayEntry.exercises.map(ex => ({ ...ex, day_of_week: dayEntry.day }))
+        );
+        setWorkoutPlans(flattened);
       }
 
-      // 2. Fetch from Supabase to get the latest
+      // 2. Fetch from Supabase to refresh
       const { data: { user } } = await supabase.auth.getUser();
       const { data: plans, error } = await supabase
         .from('workout_plans')
@@ -33,8 +38,12 @@ export default function WeeklyPlan() {
 
       if (plans && !error) {
         setWorkoutPlans(plans);
-        // Update the local cache with the fresh data
-        localStorage.setItem('weekly_workout_plans', JSON.stringify(plans));
+        
+        // 3. Update Dexie cache by grouping exercises by day
+        for (const day of daysOfWeek) {
+          const dayExercises = plans.filter(p => p.day_of_week === day);
+          await localDB.savePlan(day, dayExercises);
+        }
       }
     } catch (error) {
       console.error('Error loading plans:', error);
@@ -49,56 +58,64 @@ export default function WeeklyPlan() {
 
   if (loading && workoutPlans.length === 0) {
     return (
-      <div className="flex items-center justify-center h-screen bg-[#0a0a0a]">
-        <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-[#00d4ff]"></div>
+      <div className="flex items-center justify-center h-screen bg-black">
+        <Loader2 className="animate-spin text-cyan-500" size={32} />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] pb-8">
+    <div className="min-h-screen bg-black pb-8 text-white">
       {/* Header */}
-      <div className="bg-gradient-to-b from-[#1a1a1a] to-[#0a0a0a] px-6 pt-8 pb-6">
+      <div className="bg-zinc-900/50 backdrop-blur-xl px-6 pt-8 pb-6 border-b border-zinc-800">
         <button
           onClick={() => navigate('/')}
-          className="mb-4 flex items-center gap-2 text-[#a0a0a0]"
+          className="mb-4 flex items-center gap-2 text-zinc-500"
         >
-          <ArrowLeft className="w-5 h-5" />
-          <span>Back</span>
+          <ArrowLeft size={20} /> 
+          <span className="text-[10px] font-black uppercase tracking-widest">Back</span>
         </button>
-        <h1 className="text-3xl font-bold text-white mb-2">Weekly Plan</h1>
-        <p className="text-[#a0a0a0]">Plan your workout routine for the week</p>
+        <h1 className="text-3xl font-black uppercase italic tracking-tighter">Weekly <span className="text-cyan-500">Plan</span></h1>
+        <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">Organize your training split</p>
       </div>
 
       {/* Days List */}
-      <div className="px-6 mt-6 space-y-4">
+      <div className="px-6 mt-6 space-y-3">
         {daysOfWeek.map((day) => {
           const plans = getDayPlans(day);
           const exerciseCount = plans.length;
+          const isRestDay = exerciseCount === 0;
           
           return (
             <button
               key={day}
-              // This goes to the specific day to add/remove exercises
               onClick={() => navigate(`/DayPlan?day=${day}`)}
-              className="w-full bg-[#1a1a1a] border border-[#2a2a2a] rounded-2xl p-5 active:scale-95 transition-transform"
+              className="w-full bg-zinc-900 border border-zinc-800 rounded-3xl p-5 active:scale-[0.98] transition-all group"
             >
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-4">
-                  <div className={`w-14 h-14 rounded-xl flex items-center justify-center ${
-                    exerciseCount > 0 ? 'bg-[#00d4ff]/10' : 'bg-[#2a2a2a]'
+                  <div className={`w-14 h-14 rounded-2xl flex items-center justify-center border transition-colors ${
+                    !isRestDay 
+                      ? 'bg-cyan-500/10 border-cyan-500/20' 
+                      : 'bg-black border-zinc-800'
                   }`}>
-                    <Dumbbell className={`w-7 h-7 ${exerciseCount > 0 ? 'text-[#00d4ff]' : 'text-[#a0a0a0]'}`} />
+                    <Dumbbell className={`w-6 h-6 ${!isRestDay ? 'text-cyan-500' : 'text-zinc-700'}`} />
                   </div>
                   <div className="text-left">
-                    <h3 className="text-white font-bold text-lg capitalize">{day}</h3>
-                    <p className="text-[#a0a0a0] text-sm">
-                      {exerciseCount === 0 ? 'Rest day' : `${exerciseCount} exercises`}
+                    <h3 className="text-lg font-black uppercase italic tracking-tighter group-active:text-cyan-500 transition-colors">
+                      {day}
+                    </h3>
+                    <p className={`text-[10px] font-bold uppercase tracking-widest ${
+                      isRestDay ? 'text-zinc-600' : 'text-cyan-500/60'
+                    }`}>
+                      {isRestDay ? 'Rest Day' : `${exerciseCount} exercises scheduled`}
                     </p>
                   </div>
                 </div>
                 
-                <ChevronRight className="w-6 h-6 text-[#a0a0a0]" />
+                <div className="w-10 h-10 rounded-full bg-black border border-zinc-800 flex items-center justify-center text-zinc-500 group-hover:border-zinc-600 transition-colors">
+                  <ChevronRight size={20} />
+                </div>
               </div>
             </button>
           );
