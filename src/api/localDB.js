@@ -88,7 +88,21 @@ export const localDB = {
     }
   },
 
-  async syncExercises(exerciseList) {
-    return await db.exercises.bulkPut(exerciseList);
-  }
-};
+  async syncExercises() {
+    // Pull the full 300+ exercise list from Supabase
+    const { data, error } = await supabase
+      .from('exercises')
+      .select('*');
+
+    if (error) {
+      console.error("Error fetching from Base 44:", error);
+      return;
+    }
+
+    if (data) {
+      // Clear the old 5 strings and put the real 300+ objects in Dexie
+      await db.exercises.clear();
+      await db.exercises.bulkPut(data);
+      return data;
+    }
+  };

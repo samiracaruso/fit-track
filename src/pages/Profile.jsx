@@ -15,15 +15,13 @@ export default function Profile() {
   };
 
   const seedDatabase = async () => {
-    const defaultExercises = [
-      { id: '1', name: 'Bench Press', type: 'Chest' },
-      { id: '2', name: 'Squat', type: 'Legs' },
-      { id: '3', name: 'Deadlift', type: 'Back' },
-      { id: '4', name: 'Overhead Press', type: 'Shoulders' },
-      { id: '5', name: 'Barbell Row', type: 'Back' }
-    ];
-    await localDB.syncExercises(defaultExercises);
-    toast.success("Exercise list updated!");
+    toast.loading("Fetching 300+ movements from Base 44...");
+    try {
+      await localDB.syncExercises();
+      toast.success("Library Synced Successfully!");
+    } catch (err) {
+      toast.error("Cloud sync failed. Check connection.");
+    }
   };
 
   return (
