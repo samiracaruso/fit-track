@@ -1,3 +1,4 @@
+// [DEXIE-INTEGRATED] - Updated for JSONB Sets Array
 import React, { useState } from 'react';
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -14,190 +15,79 @@ export default function PlannedExerciseCard({
 }) {
   const [isEditing, setIsEditing] = useState(false);
   const [editData, setEditData] = useState({
-    target_sets: plan.target_sets || '',
-    target_reps: plan.target_reps || '',
-    target_weight_kg: plan.target_weight_kg || '',
-    target_duration_minutes: plan.target_duration_minutes || '',
-    target_distance_km: plan.target_distance_km || '',
+    // Fallback to empty array if sets doesn't exist
+    sets: plan.sets || [],
     notes: plan.notes || ''
   });
 
-  const isCardio = exercise?.is_cardio || exercise?.type === 'cardio';
+  const isCardio = exercise?.type === 'cardio';
 
   const handleSave = () => {
     onUpdate(plan.id, {
-      target_sets: editData.target_sets ? Number(editData.target_sets) : null,
-      target_reps: editData.target_reps ? Number(editData.target_reps) : null,
-      target_weight_kg: editData.target_weight_kg ? Number(editData.target_weight_kg) : null,
-      target_duration_minutes: editData.target_duration_minutes ? Number(editData.target_duration_minutes) : null,
-      target_distance_km: editData.target_distance_km ? Number(editData.target_distance_km) : null,
+      ...plan,
+      sets: editData.sets,
       notes: editData.notes
     });
     setIsEditing(false);
   };
 
   return (
-    <Card className="bg-zinc-900/80 border-zinc-800 p-4">
-      <div className="flex items-start gap-3">
-        <div {...dragHandleProps} className="mt-1 cursor-grab active:cursor-grabbing">
-          <GripVertical className="h-5 w-5 text-zinc-600" />
+    <Card className="bg-zinc-900/80 border-zinc-800 overflow-hidden mb-3">
+      <div className="flex">
+        {/* Drag Handle */}
+        <div 
+          {...dragHandleProps}
+          className="w-10 flex items-center justify-center bg-zinc-900 border-r border-zinc-800 text-zinc-700 cursor-grab active:cursor-grabbing"
+        >
+          <GripVertical size={18} />
         </div>
 
-        <div className="flex-1 min-w-0">
-          <div className="flex items-start justify-between">
+        <div className="flex-1 p-4">
+          <div className="flex justify-between items-start mb-2">
             <div>
-              <h3 className="font-semibold text-white">{plan.exercise_name}</h3>
-              <div className="flex flex-wrap gap-2 mt-2">
-                {isCardio ? (
-                  <>
-                    {plan.target_duration_minutes && (
-                      <Badge variant="outline" className="bg-emerald-500/20 text-emerald-400 border-emerald-500/30">
-                        <Timer className="h-3 w-3 mr-1" />
-                        {plan.target_duration_minutes} min
-                      </Badge>
-                    )}
-                    {plan.target_distance_km && (
-                      <Badge variant="outline" className="bg-blue-500/20 text-blue-400 border-blue-500/30">
-                        {plan.target_distance_km} km
-                      </Badge>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    {plan.target_sets && (
-                      <Badge variant="outline" className="bg-violet-500/20 text-violet-400 border-violet-500/30">
-                        {plan.target_sets} sets
-                      </Badge>
-                    )}
-                    {plan.target_reps && (
-                      <Badge variant="outline" className="bg-violet-500/20 text-violet-400 border-violet-500/30">
-                        {plan.target_reps} reps
-                      </Badge>
-                    )}
-                    {plan.target_weight_kg && (
-                      <Badge variant="outline" className="bg-amber-500/20 text-amber-400 border-amber-500/30">
-                        <Dumbbell className="h-3 w-3 mr-1" />
-                        {plan.target_weight_kg} kg
-                      </Badge>
-                    )}
-                  </>
-                )}
+              <h3 className="font-black uppercase italic text-sm text-white">
+                {plan.exercise_name || exercise?.name}
+              </h3>
+              <div className="flex gap-2 mt-1">
+                <Badge variant="outline" className="text-[10px] border-zinc-700 text-zinc-500 uppercase">
+                  {plan.sets?.length || 0} Sets
+                </Badge>
               </div>
-              {plan.notes && !isEditing && (
-                <p className="text-xs text-zinc-500 mt-2">{plan.notes}</p>
-              )}
             </div>
-
             <div className="flex gap-1">
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => setIsEditing(!isEditing)}
-                className="h-8 w-8 p-0 text-zinc-400 hover:text-white"
-              >
-                <Pencil className="h-4 w-4" />
+              <Button size="icon" variant="ghost" className="h-8 w-8 text-zinc-500" onClick={() => setIsEditing(!isEditing)}>
+                <Pencil size={14} />
               </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => onDelete(plan.id)}
-                className="h-8 w-8 p-0 text-zinc-400 hover:text-red-400"
-              >
-                <Trash2 className="h-4 w-4" />
+              <Button size="icon" variant="ghost" className="h-8 w-8 text-zinc-500 hover:text-red-500" onClick={() => onDelete(plan.id)}>
+                <Trash2 size={14} />
               </Button>
             </div>
           </div>
 
-          {isEditing && (
-            <div className="mt-4 space-y-3 pt-3 border-t border-zinc-800">
-              {isCardio ? (
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="text-xs text-zinc-500 block mb-1">Duration (min)</label>
-                    <Input
-                      type="number"
-                      placeholder="30"
-                      value={editData.target_duration_minutes}
-                      onChange={(e) => setEditData({ ...editData, target_duration_minutes: e.target.value })}
-                      className="bg-zinc-800 border-zinc-700 h-9"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-zinc-500 block mb-1">Distance (km)</label>
-                    <Input
-                      type="number"
-                      step="0.1"
-                      placeholder="5"
-                      value={editData.target_distance_km}
-                      onChange={(e) => setEditData({ ...editData, target_distance_km: e.target.value })}
-                      className="bg-zinc-800 border-zinc-700 h-9"
-                    />
-                  </div>
-                </div>
-              ) : (
-                <div className="grid grid-cols-3 gap-3">
-                  <div>
-                    <label className="text-xs text-zinc-500 block mb-1">Sets</label>
-                    <Input
-                      type="number"
-                      placeholder="3"
-                      value={editData.target_sets}
-                      onChange={(e) => setEditData({ ...editData, target_sets: e.target.value })}
-                      className="bg-zinc-800 border-zinc-700 h-9"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-zinc-500 block mb-1">Reps</label>
-                    <Input
-                      type="number"
-                      placeholder="12"
-                      value={editData.target_reps}
-                      onChange={(e) => setEditData({ ...editData, target_reps: e.target.value })}
-                      className="bg-zinc-800 border-zinc-700 h-9"
-                    />
-                  </div>
-                  <div>
-                    <label className="text-xs text-zinc-500 block mb-1">Weight (kg)</label>
-                    <Input
-                      type="number"
-                      step="0.5"
-                      placeholder="20"
-                      value={editData.target_weight_kg}
-                      onChange={(e) => setEditData({ ...editData, target_weight_kg: e.target.value })}
-                      className="bg-zinc-800 border-zinc-700 h-9"
-                    />
-                  </div>
-                </div>
-              )}
+          {isEditing ? (
+            <div className="mt-4 space-y-4 border-t border-zinc-800 pt-4">
               <div>
-                <label className="text-xs text-zinc-500 block mb-1">Notes</label>
+                <label className="text-[10px] font-black uppercase text-zinc-500 block mb-2">Internal Notes</label>
                 <Input
-                  placeholder="Any notes..."
                   value={editData.notes}
                   onChange={(e) => setEditData({ ...editData, notes: e.target.value })}
-                  className="bg-zinc-800 border-zinc-700 h-9"
+                  className="bg-zinc-800 border-zinc-700 h-10 text-white"
+                  placeholder="Focus on tempo..."
                 />
               </div>
-              <div className="flex gap-2 justify-end">
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => setIsEditing(false)}
-                  className="h-8"
-                >
-                  <X className="h-4 w-4 mr-1" />
-                  Cancel
+              <div className="flex gap-2">
+                <Button size="sm" className="flex-1 bg-cyan-500 text-black font-black uppercase text-xs" onClick={handleSave}>
+                  Save Plan
                 </Button>
-                <Button
-                  size="sm"
-                  onClick={handleSave}
-                  className="h-8 bg-emerald-600 hover:bg-emerald-700"
-                >
-                  <Check className="h-4 w-4 mr-1" />
-                  Save
+                <Button size="sm" variant="outline" className="border-zinc-700 text-white font-black uppercase text-xs" onClick={() => setIsEditing(false)}>
+                  Cancel
                 </Button>
               </div>
             </div>
+          ) : (
+            plan.notes && (
+              <p className="text-xs text-zinc-500 mt-2 italic">“{plan.notes}”</p>
+            )
           )}
         </div>
       </div>
