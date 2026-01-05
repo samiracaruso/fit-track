@@ -13,7 +13,8 @@ import {
   Settings, 
   Flame, 
   Loader2,
-  Clock
+  Clock,
+  Zap
 } from 'lucide-react';
 import { format, startOfWeek, addDays, isSameDay } from 'date-fns';
 
@@ -25,6 +26,8 @@ export default function Home() {
   const [activeSession, setActiveSession] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  const daysOfWeek = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
   useEffect(() => {
     loadData();
   }, []);
@@ -34,15 +37,15 @@ export default function Home() {
       setLoading(true);
       const todayName = format(new Date(), 'EEEE').toLowerCase();
 
-      // 1. INSTANT LOAD: Get from Dexie
+      // 1. INSTANT LOAD: Get from Dexie (Offline-First)
       const [cachedPlans, cachedHistory, cachedActive] = await Promise.all([
-        localDB.getPlansByDay(todayName),
+        localDB.getPlanByDay(todayName),
         localDB.getHistory(),
         localDB.getActiveSession()
       ]);
 
-      if (cachedPlans.length) setWorkoutPlans(cachedPlans);
-      if (cachedHistory.length) setRecentSessions(cachedHistory);
+      if (cachedPlans) setWorkoutPlans(cachedPlans);
+      if (cachedHistory) setRecentSessions(cachedHistory);
       if (cachedActive) setActiveSession(cachedActive);
 
       // 2. BACKGROUND SYNC: Fetch from Supabase
@@ -59,23 +62,25 @@ export default function Home() {
             .order('date', { ascending: false })
         ]);
 
+        // Sync Weekly Plans to Dexie
         if (plansRes.data) {
-          const todaysPlans = plansRes.data.filter(p => p.day_of_week === todayName);
-          setWorkoutPlans(todaysPlans);
-          // Sync today's specific plans to Dexie
-          await localDB.syncPlans(todayName, todaysPlans);
+          for (const day of daysOfWeek) {
+            const dayExercises = plansRes.data.filter(p => p.day_of_week === day);
+            await localDB.savePlan(day, dayExercises);
+          }
+          // Update local state for today's display
+          setWorkoutPlans(plansRes.data.filter(p => p.day_of_week === todayName));
         }
         
+        // Sync History to Dexie
         if (sessionsRes.data) {
           setRecentSessions(sessionsRes.data);
-          // 3. Update History in Dexie
-          for (const session of sessionsRes.data) {
-            await localDB.saveSession(session);
-          }
+          await localDB.history.clear(); // Clear old history to match cloud source of truth
+          await localDB.history.bulkAdd(sessionsRes.data);
         }
       }
     } catch (error) {
-      console.log('Using offline data for dashboard');
+      console.log('Running in offline mode - using local storage');
     } finally {
       setLoading(false);
     }
@@ -90,7 +95,7 @@ export default function Home() {
       dayName: format(date, 'EEEE').toLowerCase(),
       dayShort: format(date, 'EEE')[0],
       isToday: isSameDay(date, new Date()),
-      hasSession: recentSessions.some(s => s.date === dateStr && s.status === 'completed')
+      hasSession: recentSessions.some(s => s.date.split('T')[0] === dateStr && s.status === 'completed')
     };
   });
 
@@ -119,8 +124,8 @@ export default function Home() {
             {user?.email?.[0].toUpperCase() || 'A'}
           </div>
           <div>
-            <h1 className="text-xs font-black uppercase tracking-[0.2em] text-zinc-500">Welcome Back</h1>
-            <p className="text-sm font-bold">{user?.user_metadata?.full_name || 'Athlete'}</p>
+            <h1 className="text-xs font-black uppercase tracking-[0.2em] text-zinc-500">System Active</h1>
+            <p className="text-sm font-bold">{user?.user_metadata?.full_name || 'Elite Athlete'}</p>
           </div>
         </div>
         <button onClick={() => navigate('/Settings')} className="p-3 bg-zinc-900 rounded-2xl border border-zinc-800 text-zinc-400">
@@ -130,24 +135,26 @@ export default function Home() {
 
       {/* Weekly Stats Card */}
       <div className="px-6 mb-8">
-        <div className="bg-gradient-to-br from-zinc-900 to-black border border-zinc-800 rounded-[2.5rem] p-8 relative overflow-hidden">
+        <div className="bg-gradient-to-br from-zinc-900 to-black border border-zinc-800 rounded-[2.5rem] p-8 relative overflow-hidden shadow-2xl shadow-cyan-500/5">
           <div className="relative z-10">
             <div className="flex items-center gap-2 mb-6">
-              <Flame size={16} className="text-orange-500 fill-orange-500" />
+              <Zap size={14} className="text-cyan-500 fill-cyan-500" />
               <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Weekly Performance</span>
             </div>
             <div className="flex gap-10">
               <div>
-                <p className="text-4xl font-black italic tracking-tighter mb-1">{stats.workouts}</p>
-                <p className="text-[10px] font-bold uppercase text-zinc-500 tracking-wider">Workouts</p>
+                <p className="text-4xl font-black italic tracking-tighter mb-1 text-white">{stats.workouts}</p>
+                <p className="text-[10px] font-bold uppercase text-zinc-500 tracking-wider">Sessions</p>
               </div>
               <div className="w-px h-12 bg-zinc-800" />
               <div>
-                <p className="text-4xl font-black italic tracking-tighter mb-1">{stats.calories}</p>
-                <p className="text-[10px] font-bold uppercase text-zinc-500 tracking-wider">Calories</p>
+                <p className="text-4xl font-black italic tracking-tighter mb-1 text-white">{stats.calories}</p>
+                <p className="text-[10px] font-bold uppercase text-zinc-500 tracking-wider">Kcal Burned</p>
               </div>
             </div>
           </div>
+          {/* Subtle Background Glow */}
+          <div className="absolute -right-4 -top-4 w-24 h-24 bg-cyan-500/10 blur-[50px] rounded-full" />
         </div>
       </div>
 
@@ -166,7 +173,7 @@ export default function Home() {
               <div className="text-left">
                 <p className="text-[10px] font-black uppercase text-black/60 tracking-widest">In Progress</p>
                 <h3 className="text-xl font-black text-black uppercase italic tracking-tighter">Resume Workout</h3>
-                <p className="text-[10px] font-bold text-black/60 uppercase">Don't lose your gains!</p>
+                <p className="text-[10px] font-bold text-black/60 uppercase">Pick up where you left off</p>
               </div>
             </div>
             <ChevronRight className="text-black/40 group-hover:text-black" />
@@ -180,12 +187,12 @@ export default function Home() {
         >
           <div className="flex items-center gap-4">
             <div className="w-14 h-14 bg-black rounded-2xl flex items-center justify-center text-cyan-500">
-              <Play size={24} fill="currentColor" />
+              <Play size={24} fill="currentColor" className="ml-1" />
             </div>
             <div className="text-left">
-              <p className="text-[10px] font-black uppercase text-black/60 tracking-widest">Next Session</p>
-              <h3 className="text-xl font-black text-black uppercase italic tracking-tighter">Start Training</h3>
-              <p className="text-[10px] font-bold text-black/60 uppercase">{todayExercisesCount} Exercises Ready</p>
+              <p className="text-[10px] font-black uppercase text-black/60 tracking-widest">Today's Protocol</p>
+              <h3 className="text-xl font-black text-black uppercase italic tracking-tighter">{todayName} Session</h3>
+              <p className="text-[10px] font-bold text-black/60 uppercase">{todayExercisesCount} Exercises Configured</p>
             </div>
           </div>
           <ChevronRight className="text-black/40 group-hover:text-black" />
@@ -195,15 +202,15 @@ export default function Home() {
         <div className="pt-4">
           <div className="flex justify-between items-center mb-4">
             <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Activity Calendar</h3>
-            <button onClick={() => navigate('/Calendar')} className="text-[10px] font-black uppercase text-cyan-500">Full History</button>
+            <button onClick={() => navigate('/WorkoutHistory')} className="text-[10px] font-black uppercase text-cyan-500">Full History</button>
           </div>
-          <div className="flex justify-between items-center bg-zinc-900/40 p-4 rounded-3xl border border-zinc-800/50">
+          <div className="flex justify-between items-center bg-zinc-900/40 p-4 rounded-[2rem] border border-zinc-800/50">
             {weekDays.map((day, idx) => (
               <div key={idx} className="flex flex-col items-center gap-2">
                 <span className={`text-[10px] font-black ${day.isToday ? 'text-cyan-500' : 'text-zinc-600'}`}>{day.dayShort}</span>
-                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
+                <div className={`w-9 h-9 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
                   day.hasSession ? 'bg-cyan-500 text-black shadow-lg shadow-cyan-500/30' : 
-                  day.isToday ? 'border border-cyan-500 text-cyan-500' : 'text-zinc-500'
+                  day.isToday ? 'border-2 border-cyan-500 text-cyan-500' : 'text-zinc-500 border border-transparent'
                 }`}>
                   {format(day.date, 'd')}
                 </div>
@@ -211,6 +218,20 @@ export default function Home() {
             ))}
           </div>
         </div>
+
+        {/* Manage Routine Link */}
+        <button 
+          onClick={() => navigate('/WeeklyPlan')}
+          className="w-full bg-zinc-900 border border-zinc-800 rounded-[2rem] p-5 flex items-center justify-between group active:scale-[0.98] transition-all"
+        >
+          <div className="flex items-center gap-4">
+            <div className="w-10 h-10 bg-black rounded-xl flex items-center justify-center text-zinc-500 group-hover:text-cyan-500 transition-colors">
+              <CalendarIcon size={18} />
+            </div>
+            <span className="font-black uppercase italic tracking-tighter text-sm">Edit Weekly Routine</span>
+          </div>
+          <ChevronRight size={18} className="text-zinc-700" />
+        </button>
       </div>
     </div>
   );
