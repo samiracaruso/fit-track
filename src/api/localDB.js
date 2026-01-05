@@ -19,6 +19,7 @@ export const localDB = {
   },
 
   async getPlanByDay(day) {
+    if (!day) return []; 
     return await db.plans.where('day_of_week').equals(day.toLowerCase()).toArray();
   },
 
@@ -32,6 +33,10 @@ export const localDB = {
 
   async deleteActiveSession() {
     return await db.active_session.delete('current');
+  },
+
+  async getHistory() {
+    return await db.history.orderBy('date').reverse().toArray();
   },
 
   async saveSession(session) {
@@ -48,28 +53,27 @@ export const localDB = {
     });
   },
 
-  // THIS IS THE MISSING FUNCTION CAUSING THE CRASH
   async processSyncQueue() {
     if (!navigator.onLine) return;
-
     const pending = await db.sync_queue.where('status').equals('pending').toArray();
     
     for (const item of pending) {
       try {
         const { table, action, data } = item;
         let error;
+        const targetTable = table === 'history' ? 'workout_sessions' : 'workout_plans';
 
         if (action === 'INSERT') {
-          ({ error } = await supabase.from(table === 'history' ? 'workout_sessions' : 'workout_plans').insert([data]));
+          ({ error } = await supabase.from(targetTable).insert([data]));
         } else if (action === 'DELETE') {
-          ({ error } = await supabase.from(table === 'history' ? 'workout_sessions' : 'workout_plans').delete().eq('id', data.id));
+          ({ error } = await supabase.from(targetTable).delete().eq('id', data.id));
         }
 
         if (!error) {
           await db.sync_queue.update(item.id, { status: 'synced' });
         }
       } catch (err) {
-        console.error("Sync failed for item:", item.id, err);
+        console.error("Sync failed:", err);
       }
     }
   },
@@ -80,29 +84,21 @@ export const localDB = {
       await db.plans.toCollection().modify(plan => {
         if (!plan.user_id) plan.user_id = userId;
       });
-      await db.history.toCollection().modify(session => {
-        if (!session.user_id) session.user_id = userId;
+      await db.history.toCollection().modify(h => {
+        if (!h.user_id) h.user_id = userId;
       });
     } catch (err) {
-      console.warn("Fit-Track: Sync association skipped:", err);
+      console.warn("Association skipped:", err);
     }
   },
 
   async syncExercises() {
-    // Pull the full 300+ exercise list from Supabase
-    const { data, error } = await supabase
-      .from('exercises')
-      .select('*');
-
-    if (error) {
-      console.error("Error fetching from Base 44:", error);
-      return;
-    }
-
+    const { data, error } = await supabase.from('exercises').select('*');
+    if (error) throw error;
     if (data) {
-      // Clear the old 5 strings and put the real 300+ objects in Dexie
       await db.exercises.clear();
       await db.exercises.bulkPut(data);
       return data;
     }
-  };
+  }
+};
