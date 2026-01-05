@@ -1,21 +1,16 @@
 import Dexie from 'dexie';
 
-// 1. Initialize the Database
 export const db = new Dexie('WorkoutAppDB');
 
-// 2. Define Schema
-// The order here is crucial for the database structure
 db.version(1).stores({
   plans: '++id, day_of_week, exercise_name',
   history: '++id, date, status',
-  exercises: '++id, name, category',
-  active_workout: 'id, date, exercises' // Add this for ActiveSession.jsx
+  exercises: 'id, name, type', // 'id' is the primary key from Supabase
+  active_workout: 'id, date, exercises'
 });
 
-// 3. The Service Wrapper
-// All helper functions MUST go inside this "localDB" object
 export const localDB = {
-  // --- DayPlan.jsx Methods ---
+  // --- Plan Methods ---
   getPlansByDay: async (day) => {
     return await db.plans.where('day_of_week').equals(day).toArray();
   },
@@ -27,17 +22,31 @@ export const localDB = {
     });
   },
 
-  // --- Home.jsx & History Methods ---
+  // --- History Methods ---
   saveSession: async (session) => await db.history.put(session),
   
   getHistory: async () => {
     return await db.history.orderBy('date').reverse().toArray();
   },
 
-  // --- ActiveSession.jsx Methods (New) ---
+  // --- Exercise Library Methods ---
+  async saveSingleExercise(exercise) {
+    return await db.exercises.put(exercise);
+  },
+
+  async getAllExercises() {
+    return await db.exercises.toArray();
+  },
+
+  async syncExercises(exercises) {
+    return await db.transaction('rw', db.exercises, async () => {
+      await db.exercises.clear();
+      await db.exercises.bulkAdd(exercises);
+    });
+  },
+
+  // --- Active Session Methods ---
   async saveActiveSession(session) {
-    // We use a fixed ID 'current_session' so it overwrites itself 
-    // instead of creating 100 drafts.
     return await db.active_workout.put({ id: 'current_session', ...session });
   },
 
