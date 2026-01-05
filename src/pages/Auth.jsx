@@ -59,8 +59,8 @@ export default function Auth() {
           <Dumbbell size={40} className="text-black" />
         </div>
         <h1 className="text-4xl font-black italic uppercase tracking-tighter text-white">
-          Iron<span className="text-cyan-500 text-stroke-thin">Tracker</span>
-        </h1>
+  		Fit-<span className="text-cyan-500">Track</span>
+	</h1>
         <p className="text-zinc-500 text-[10px] font-black uppercase tracking-[0.3em] mt-2">
           Authentication Required
         </p>
