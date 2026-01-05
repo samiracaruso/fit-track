@@ -34,17 +34,17 @@ export default function DayPlan() {
 
   // FIXED FILTER LOGIC: Correctly handles muscle_groups text array
   const filteredCatalog = catalog.filter(ex => {
-    const matchesSearch = ex.name.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesType = activeType === 'All' || ex.type === activeType;
-    const matchesFav = !showOnlyFavs || ex.is_favorite;
-    
-    // Safety check: Use .some() because muscle_groups is an array
-    const muscleArray = Array.isArray(ex.muscle_groups) ? ex.muscle_groups : [];
-    const matchesMuscle = activeMuscle === 'All' || 
-      muscleArray.some(m => m.toLowerCase() === activeMuscle.toLowerCase());
-    
-    return matchesSearch && matchesType && matchesFav && matchesMuscle;
-  });
+  const matchesSearch = ex.name.toLowerCase().includes(searchQuery.toLowerCase());
+  const matchesType = activeType === 'All' || ex.type === activeType;
+  const matchesFav = !showOnlyFavs || ex.is_favorite;
+  
+  // FIXED ARRAY LOGIC:
+  const muscleArray = Array.isArray(ex.muscle_groups) ? ex.muscle_groups : [];
+  const matchesMuscle = activeMuscle === 'All' || 
+    muscleArray.some(m => String(m).toLowerCase() === activeMuscle.toLowerCase());
+  
+  return matchesSearch && matchesType && matchesFav && matchesMuscle;
+});
 
   const handleToggleFavorite = async (e, ex) => {
     e.stopPropagation();
