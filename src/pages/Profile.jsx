@@ -10,12 +10,12 @@ export default function Profile() {
   const navigate = useNavigate();
 
   const handleSync = async () => {
-    toast.loading("Fetching 300+ movements from Base 44...");
+    const toastId = toast.loading("Fetching 300+ movements from Base 44...");
     try {
       await localDB.syncExercises();
-      toast.success("Library Updated!");
+      toast.success("Library Updated!", { id: toastId });
     } catch (err) {
-      toast.error("Sync failed.");
+      toast.error("Sync failed.", { id: toastId });
     }
   };
 
