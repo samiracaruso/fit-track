@@ -57,10 +57,24 @@ export const localDB = {
   // --- NEW: LINK DATA TO USER ---
   // Call this in App.jsx or Home.jsx right after login
   async associateLocalDataWithUser(userId) {
-    // Updates any local records that don't have a user_id yet
-    await db.plans.where('user_id').equals(undefined).modify({ user_id: userId });
-    await db.history.where('user_id').equals(undefined).modify({ user_id: userId });
-  },
+  if (!userId) return;
+  
+  try {
+    // Check if there are any plans with no user_id first
+    const guestPlans = await this.db.plans.where('user_id').equals('').toArray();
+    
+    if (guestPlans.length > 0) {
+      await this.db.plans
+        .where('user_id')
+        .equals('')
+        .modify({ user_id: userId });
+      console.log("Fit-Track: Linked guest plans to user account.");
+    }
+  } catch (err) {
+    // We catch the error here so the app keeps running even if sync fails
+    console.warn("Fit-Track: No guest data to link or sync error:", err);
+  }
+},
 
   // --- HISTORY METHODS ---
   async saveSession(session) {

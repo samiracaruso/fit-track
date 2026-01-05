@@ -31,6 +31,7 @@ export default function Pages() {
 
   return (
     <Routes>
+	<Route path="/Home" element={<Navigate to="/" />} />
       <Route path="/Auth" element={!session ? <Auth /> : <Navigate to="/" />} />
       <Route path="/" element={session ? <Home /> : <Navigate to="/Auth" />} />
       <Route path="/WeeklyPlan" element={session ? <WeeklyPlan /> : <Navigate to="/Auth" />} />
