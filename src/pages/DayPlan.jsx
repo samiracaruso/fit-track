@@ -1,7 +1,8 @@
+// [DEXIE-INTEGRATED] - Complete DayPlan.jsx
 import React, { useState, useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/supabaseClient';
-import { localDB } from '@/api/localDB'; // Import our new Dexie service
+import { localDB } from '@/api/localDB'; 
 import { 
   ChevronLeft, 
   GripVertical, 
@@ -9,8 +10,7 @@ import {
   Trash2, 
   Save, 
   Loader2, 
-  Dumbbell,
-  Search
+  Dumbbell
 } from 'lucide-react';
 
 export default function DayPlan() {
@@ -31,7 +31,7 @@ export default function DayPlan() {
       setLoading(true);
       
       // 1. Instant Load: Get from local Dexie DB
-      const cachedPlans = await localDB.getPlansByDay(day);
+      const cachedPlans = await localDB.getPlanByDay(day);
       if (cachedPlans && cachedPlans.length > 0) {
         setExercises(cachedPlans);
       }
@@ -44,16 +44,16 @@ export default function DayPlan() {
           .select('*')
           .eq('user_id', user.id)
           .eq('day_of_week', day)
-          .order('order_index');
+          .order('order', { ascending: true }); // Matches SQL schema
 
         if (remotePlans) {
           setExercises(remotePlans);
-          // 3. Update Dexie cache for future offline use
-          await localDB.syncPlans(day, remotePlans);
+          // 3. Update Dexie cache
+          await localDB.savePlan(day, remotePlans);
         }
       }
     } catch (error) {
-      console.error("Offline mode: Using local cache only.");
+      console.error("Offline mode: Using local cache.");
     } finally {
       setLoading(false);
     }
@@ -63,29 +63,33 @@ export default function DayPlan() {
     setSaving(true);
     try {
       const { data: { user } } = await supabase.auth.getUser();
-      
-      // Prepare data with user_id and day
+      if (!user) throw new Error("No authenticated user");
+
+      // Prepare data for Supabase & Dexie
       const updatedExercises = exercises.map((ex, index) => ({
         ...ex,
         user_id: user.id,
         day_of_week: day,
-        order_index: index
+        order: index, // Matches SQL 'order' column
+        // Ensure sets is saved as a JSON array for our JSONB column
+        sets: Array.isArray(ex.sets) ? ex.sets : (typeof ex.sets === 'string' ? JSON.parse(ex.sets) : [])
       }));
 
-      // Save to Supabase
+      // 1. Save to Supabase (Cloud)
       const { error } = await supabase
         .from('workout_plans')
-        .upsert(updatedExercises);
+        .upsert(updatedExercises, { onConflict: 'id' });
 
       if (error) throw error;
 
-      // Save to Dexie (Local Success)
-      await localDB.syncPlans(day, updatedExercises);
-      alert("Changes saved and synced!");
+      // 2. Save to Dexie (Local)
+      await localDB.savePlan(day, updatedExercises);
+      alert("Plan synced successfully!");
     } catch (error) {
-      // Fallback: Save locally if cloud fails
-      await localDB.syncPlans(day, exercises);
-      alert("Cloud sync failed, but changes are saved to your device!");
+      console.error("Save error:", error);
+      // Fallback: Save locally even if cloud fails
+      await localDB.savePlan(day, exercises);
+      alert("Saved locally (Offline). Changes will sync next time you're online.");
     } finally {
       setSaving(false);
     }
@@ -139,13 +143,13 @@ export default function DayPlan() {
               className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between group"
             >
               <div className="flex items-center gap-4">
-                <div className="text-zinc-600 group-active:text-cyan-500">
+                <div className="text-zinc-600">
                   <GripVertical size={20} />
                 </div>
                 <div>
                   <h3 className="font-black uppercase italic text-sm">{exercise.exercise_name}</h3>
                   <p className="text-[10px] text-zinc-500 font-bold uppercase">
-                    {exercise.sets} Sets • {exercise.reps} Reps
+                    {Array.isArray(exercise.sets) ? exercise.sets.length : 0} Sets Configured
                   </p>
                 </div>
               </div>
