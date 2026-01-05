@@ -1,8 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '@/supabaseClient';
-import { localDB } from '@/api/localDB'; // Import Dexie Service
+import { localDB } from '@/api/localDB'; 
 import { useNavigate } from 'react-router-dom';
-import { ChevronRight, Plus, Dumbbell, Activity, TrendingUp, Calendar as CalendarIcon, Play, Settings, Flame, Loader2 } from 'lucide-react';
+import { 
+  ChevronRight, 
+  Plus, 
+  Dumbbell, 
+  Activity, 
+  TrendingUp, 
+  Calendar as CalendarIcon, 
+  Play, 
+  Settings, 
+  Flame, 
+  Loader2,
+  Clock
+} from 'lucide-react';
 import { format, startOfWeek, addDays, isSameDay } from 'date-fns';
 
 export default function Home() {
@@ -10,6 +22,7 @@ export default function Home() {
   const [user, setUser] = useState(null);
   const [workoutPlans, setWorkoutPlans] = useState([]);
   const [recentSessions, setRecentSessions] = useState([]);
+  const [activeSession, setActiveSession] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -22,13 +35,15 @@ export default function Home() {
       const todayName = format(new Date(), 'EEEE').toLowerCase();
 
       // 1. INSTANT LOAD: Get from Dexie
-      const [cachedPlans, cachedHistory] = await Promise.all([
+      const [cachedPlans, cachedHistory, cachedActive] = await Promise.all([
         localDB.getPlansByDay(todayName),
-        localDB.getHistory()
+        localDB.getHistory(),
+        localDB.getActiveSession()
       ]);
 
       if (cachedPlans.length) setWorkoutPlans(cachedPlans);
       if (cachedHistory.length) setRecentSessions(cachedHistory);
+      if (cachedActive) setActiveSession(cachedActive);
 
       // 2. BACKGROUND SYNC: Fetch from Supabase
       const { data: { user: currentUser } } = await supabase.auth.getUser();
@@ -45,10 +60,10 @@ export default function Home() {
         ]);
 
         if (plansRes.data) {
-          // We sync all plans for the week to Dexie here
-          // For simplicity in this view, we filter for today
-          setWorkoutPlans(plansRes.data.filter(p => p.day_of_week === todayName));
-          // Note: You might want a localDB.syncAllPlans(plansRes.data) helper later
+          const todaysPlans = plansRes.data.filter(p => p.day_of_week === todayName);
+          setWorkoutPlans(todaysPlans);
+          // Sync today's specific plans to Dexie
+          await localDB.syncPlans(todayName, todaysPlans);
         }
         
         if (sessionsRes.data) {
@@ -66,9 +81,6 @@ export default function Home() {
     }
   };
 
-  // ... (Keep your existing getWeekDays and stats logic from the previous Home.jsx)
-  // Just make sure they use the state variables workoutPlans and recentSessions
-  
   const weekDays = Array.from({ length: 7 }, (_, i) => {
     const date = addDays(startOfWeek(new Date(), { weekStartsOn: 1 }), i);
     const dateStr = format(date, 'yyyy-MM-dd');
@@ -100,9 +112,8 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-black pb-24 text-white">
-       {/* (The rest of your beautiful UI code from the previous Home.jsx update) */}
-       {/* Ensure the "Start Today's Workout" button uses todayExercisesCount */}
-       <div className="px-6 pt-8 pb-6 flex items-center justify-between">
+      {/* Header */}
+      <div className="px-6 pt-8 pb-6 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-cyan-500 to-blue-600 flex items-center justify-center font-black italic border border-white/20">
             {user?.email?.[0].toUpperCase() || 'A'}
@@ -117,6 +128,7 @@ export default function Home() {
         </button>
       </div>
 
+      {/* Weekly Stats Card */}
       <div className="px-6 mb-8">
         <div className="bg-gradient-to-br from-zinc-900 to-black border border-zinc-800 rounded-[2.5rem] p-8 relative overflow-hidden">
           <div className="relative z-10">
@@ -139,7 +151,29 @@ export default function Home() {
         </div>
       </div>
 
+      {/* Main Action Buttons */}
       <div className="px-6 space-y-4">
+        {/* Resume Active Session (Priority) */}
+        {activeSession && (
+          <button
+            onClick={() => navigate('/ActiveWorkout')}
+            className="w-full bg-orange-500 rounded-[2rem] p-6 flex items-center justify-between group active:scale-95 transition-all shadow-xl shadow-orange-500/20"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-14 h-14 bg-black rounded-2xl flex items-center justify-center text-orange-500">
+                <Clock size={24} />
+              </div>
+              <div className="text-left">
+                <p className="text-[10px] font-black uppercase text-black/60 tracking-widest">In Progress</p>
+                <h3 className="text-xl font-black text-black uppercase italic tracking-tighter">Resume Workout</h3>
+                <p className="text-[10px] font-bold text-black/60 uppercase">Don't lose your gains!</p>
+              </div>
+            </div>
+            <ChevronRight className="text-black/40 group-hover:text-black" />
+          </button>
+        )}
+
+        {/* Start New Workout */}
         <button
           onClick={() => navigate(`/StartWorkout?day=${todayName}`)}
           className="w-full bg-cyan-500 rounded-[2rem] p-6 flex items-center justify-between group active:scale-95 transition-all shadow-xl shadow-cyan-500/20"
@@ -156,6 +190,27 @@ export default function Home() {
           </div>
           <ChevronRight className="text-black/40 group-hover:text-black" />
         </button>
+
+        {/* Calendar Strip */}
+        <div className="pt-4">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-500">Activity Calendar</h3>
+            <button onClick={() => navigate('/Calendar')} className="text-[10px] font-black uppercase text-cyan-500">Full History</button>
+          </div>
+          <div className="flex justify-between items-center bg-zinc-900/40 p-4 rounded-3xl border border-zinc-800/50">
+            {weekDays.map((day, idx) => (
+              <div key={idx} className="flex flex-col items-center gap-2">
+                <span className={`text-[10px] font-black ${day.isToday ? 'text-cyan-500' : 'text-zinc-600'}`}>{day.dayShort}</span>
+                <div className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold transition-all ${
+                  day.hasSession ? 'bg-cyan-500 text-black shadow-lg shadow-cyan-500/30' : 
+                  day.isToday ? 'border border-cyan-500 text-cyan-500' : 'text-zinc-500'
+                }`}>
+                  {format(day.date, 'd')}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
       </div>
     </div>
   );
