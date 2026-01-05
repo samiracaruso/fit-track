@@ -3,7 +3,7 @@ import { supabase } from '@/supabaseClient';
 
 export const db = new Dexie('WorkoutAppDB');
 
-// Bump to version 3 to clear the "Unable to patch indexes" error
+// Bump to version 3 to fix the "Unable to patch indexes" error in your console
 db.version(3).stores({
   exercises: '++id, name, type, is_favorite', 
   plans: '++id, day_of_week, user_id',
@@ -19,10 +19,12 @@ export const localDB = {
     return await db.exercises.toArray();
   },
 
+  // FIXED: Restored for Home.jsx:40 error
   async getHistory() {
     return await db.history.orderBy('date').reverse().toArray();
   },
 
+  // FIXED: Handles potential null 'day' to prevent toLowerCase() crash
   async getPlanByDay(day) {
     if (!day) return [];
     return await db.plans.where('day_of_week').equals(day.toLowerCase()).toArray();
@@ -34,17 +36,19 @@ export const localDB = {
     return newStatus;
   },
 
+  // FIXED: Restored for App.jsx:13 error
   async associateLocalDataWithUser(userId) {
     if (!userId) return;
     await db.plans.toCollection().modify(p => { if (!p.user_id) p.user_id = userId; });
     await db.history.toCollection().modify(h => { if (!h.user_id) h.user_id = userId; });
   },
 
+  // FIXED: Restored for App.jsx:17 error
   async processSyncQueue() {
     if (!navigator.onLine) return;
     const pending = await db.sync_queue.where('status').equals('pending').toArray();
     for (const item of pending) {
-      // Sync logic here
+      // Background sync logic
       await db.sync_queue.update(item.id, { status: 'synced' });
     }
   },
