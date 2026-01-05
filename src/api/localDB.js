@@ -1,9 +1,8 @@
 import Dexie from 'dexie';
+import { supabase } from '@/supabaseClient';
 
-// 1. Initialize the Database
 export const db = new Dexie('WorkoutAppDB');
 
-// 2. Define Schema
 db.version(1).stores({
   exercises: '++id, name, type',
   plans: '++id, day_of_week, user_id',
@@ -12,7 +11,6 @@ db.version(1).stores({
   active_session: 'id' 
 });
 
-// 3. Abstraction Layer for easy use in Components
 export const localDB = {
   db: db,
 
@@ -21,16 +19,7 @@ export const localDB = {
   },
 
   async getPlanByDay(day) {
-    // Force lowercase to prevent "Monday" vs "monday" mismatch
     return await db.plans.where('day_of_week').equals(day.toLowerCase()).toArray();
-  },
-
-  async saveSession(session) {
-    return await db.history.add(session);
-  },
-
-  async getHistory() {
-    return await db.history.orderBy('date').reverse().toArray();
   },
 
   async saveActiveSession(session) {
@@ -45,6 +34,10 @@ export const localDB = {
     return await db.active_session.delete('current');
   },
 
+  async saveSession(session) {
+    return await db.history.add(session);
+  },
+
   async addToQueue(table, action, data) {
     return await db.sync_queue.add({
       table,
@@ -55,14 +48,43 @@ export const localDB = {
     });
   },
 
+  // THIS IS THE MISSING FUNCTION CAUSING THE CRASH
+  async processSyncQueue() {
+    if (!navigator.onLine) return;
+
+    const pending = await db.sync_queue.where('status').equals('pending').toArray();
+    
+    for (const item of pending) {
+      try {
+        const { table, action, data } = item;
+        let error;
+
+        if (action === 'INSERT') {
+          ({ error } = await supabase.from(table === 'history' ? 'workout_sessions' : 'workout_plans').insert([data]));
+        } else if (action === 'DELETE') {
+          ({ error } = await supabase.from(table === 'history' ? 'workout_sessions' : 'workout_plans').delete().eq('id', data.id));
+        }
+
+        if (!error) {
+          await db.sync_queue.update(item.id, { status: 'synced' });
+        }
+      } catch (err) {
+        console.error("Sync failed for item:", item.id, err);
+      }
+    }
+  },
+
   async associateLocalDataWithUser(userId) {
     if (!userId) return;
     try {
       await db.plans.toCollection().modify(plan => {
         if (!plan.user_id) plan.user_id = userId;
       });
+      await db.history.toCollection().modify(session => {
+        if (!session.user_id) session.user_id = userId;
+      });
     } catch (err) {
-      console.warn("Fit-Track: No guest data to link:", err);
+      console.warn("Fit-Track: Sync association skipped:", err);
     }
   },
 

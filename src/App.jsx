@@ -1,60 +1,42 @@
 import React, { useEffect } from 'react';
-import './App.css';
-import Pages from "@/pages/index.jsx";
-import { Toaster } from "sonner";
-import { localDB } from '@/api/localDB';
 import { supabase } from '@/supabaseClient';
+import { localDB } from '@/api/localDB';
+import Pages from './pages';
+import { Toaster } from 'sonner';
 
-/**
- * Fit-Track Main Entry Point
- * Handles global authentication state changes and 
- * the background synchronization engine.
- */
 function App() {
   useEffect(() => {
-    // 1. Setup the Auth Change Listener
+    // 1. Listen for Auth Changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
       if (session?.user) {
-        console.log(`Fit-Track: User ${event} - ID: ${session.user.id}`);
-        
-        // When a user logs in, link any local "guest" data to their Google ID
+        // Link any guest data to the user ID
         await localDB.associateLocalDataWithUser(session.user.id);
         
-        // If we are online, immediately try to push pending data to the cloud
+        // Push pending data to Base 44
         if (navigator.onLine) {
-          await localDB.processSyncQueue(supabase);
+          await localDB.processSyncQueue();
         }
       }
     });
 
-    // 2. Setup the Online/Offline Sync Trigger
-    const handleOnlineStatus = async () => {
+    // 2. Periodic Background Sync (Every 30 seconds)
+    const syncInterval = setInterval(() => {
       if (navigator.onLine) {
-        console.log("Fit-Track: Connection restored. Processing sync queue...");
-        await localDB.processSyncQueue(supabase);
+        localDB.processSyncQueue();
       }
-    };
+    }, 30000);
 
-    window.addEventListener('online', handleOnlineStatus);
-
-    // 3. Initial Sync Check on App Load
-    if (navigator.onLine) {
-      localDB.processSyncQueue(supabase);
-    }
-
-    // Cleanup listeners on unmount
     return () => {
       subscription.unsubscribe();
-      window.removeEventListener('online', handleOnlineStatus);
+      clearInterval(syncInterval);
     };
   }, []);
 
   return (
-    <>
+    <div className="min-h-screen bg-black">
       <Pages />
-      {/* RichColors enabled for better "Success/Error" visual feedback */}
-      <Toaster position="top-center" richColors closeButton />
-    </>
+      <Toaster position="top-center" richColors theme="dark" />
+    </div>
   );
 }
 
