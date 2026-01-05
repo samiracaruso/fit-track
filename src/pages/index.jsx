@@ -84,7 +84,7 @@ function PagesContent() {
         <Layout currentPageName={currentPage}>
             <Routes>            
                 
-                    <Route path="/" element={<ActiveSession />} />
+                    <Route path="/" element={<Home />} />
                 
                 
                 <Route path="/ActiveSession" element={<ActiveSession />} />
