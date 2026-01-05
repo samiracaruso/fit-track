@@ -1,224 +1,174 @@
 import React, { useState, useEffect } from 'react';
+import { useSearchParams, useNavigate } from 'react-router-dom';
 import { supabase } from '@/supabaseClient';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { Plus, Edit2, Trash2, ArrowLeft, Play, GripVertical, Loader2 } from 'lucide-react';
-import ExerciseLibrary from '../components/ExerciseLibrary';
-import ExerciseSetsEditor from '../components/ExerciseSetsEditor';
-import { toast } from 'sonner';
+import { localDB } from '@/api/localDB'; // Import our new Dexie service
+import { 
+  ChevronLeft, 
+  GripVertical, 
+  Plus, 
+  Trash2, 
+  Save, 
+  Loader2, 
+  Dumbbell,
+  Search
+} from 'lucide-react';
 
 export default function DayPlan() {
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
   const day = searchParams.get('day') || 'monday';
   
-  const [workoutPlans, setWorkoutPlans] = useState([]);
+  const [exercises, setExercises] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [showLibrary, setShowLibrary] = useState(false);
-  const [editingPlan, setEditingPlan] = useState(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    loadDayPlans();
+    loadData();
   }, [day]);
 
-  // HELPER: Keeps the local "cabinet" in sync for offline access
-  const refreshLocalCache = (updatedPlans) => {
-    const fullCache = JSON.parse(localStorage.getItem('weekly_workout_plans') || '[]');
-    const otherDays = fullCache.filter(p => p.day_of_week !== day);
-    const newCache = [...otherDays, ...updatedPlans];
-    localStorage.setItem('weekly_workout_plans', JSON.stringify(newCache));
-  };
-
-  const loadDayPlans = async () => {
+  const loadData = async () => {
     try {
-      // 1. Load from cache immediately
-      const fullCache = JSON.parse(localStorage.getItem('weekly_workout_plans') || '[]');
-      const localDayPlans = fullCache.filter(p => p.day_of_week === day)
-                                     .sort((a, b) => (a.order_index || 0) - (b.order_index || 0));
+      setLoading(true);
       
-      if (localDayPlans.length > 0) {
-        setWorkoutPlans(localDayPlans);
-        setLoading(false);
+      // 1. Instant Load: Get from local Dexie DB
+      const cachedPlans = await localDB.getPlansByDay(day);
+      if (cachedPlans && cachedPlans.length > 0) {
+        setExercises(cachedPlans);
       }
 
-      // 2. Fetch fresh data
+      // 2. Background Sync: Fetch from Supabase
       const { data: { user } } = await supabase.auth.getUser();
-      const { data, error } = await supabase
-        .from('workout_plans')
-        .select('*')
-        .eq('day_of_week', day)
-        .eq('user_id', user.id)
-        .order('order_index', { ascending: true });
+      if (user) {
+        const { data: remotePlans } = await supabase
+          .from('workout_plans')
+          .select('*')
+          .eq('user_id', user.id)
+          .eq('day_of_week', day)
+          .order('order_index');
 
-      if (error) throw error;
-      
-      setWorkoutPlans(data || []);
-      refreshLocalCache(data || []);
+        if (remotePlans) {
+          setExercises(remotePlans);
+          // 3. Update Dexie cache for future offline use
+          await localDB.syncPlans(day, remotePlans);
+        }
+      }
     } catch (error) {
-      console.log('Running in offline mode');
+      console.error("Offline mode: Using local cache only.");
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSelectExercise = async (exercises) => {
-    const exerciseArray = Array.isArray(exercises) ? exercises : [exercises];
-    const { data: { user } } = await supabase.auth.getUser();
-    
-    const maxOrder = workoutPlans.length > 0 
-      ? Math.max(...workoutPlans.map(p => p.order_index || 0)) 
-      : 0;
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      // Prepare data with user_id and day
+      const updatedExercises = exercises.map((ex, index) => ({
+        ...ex,
+        user_id: user.id,
+        day_of_week: day,
+        order_index: index
+      }));
 
-    const newPlans = exerciseArray.map((ex, i) => ({
-      id: crypto.randomUUID(), // Temp ID for optimistic UI
-      user_id: user.id,
-      day_of_week: day,
-      exercise_id: ex.id,
-      exercise_name: ex.name,
-      exercise_image_url: ex.image_url,
-      order_index: maxOrder + i + 1,
-      sets: [{ reps: 0, weight_kg: 0, duration_minutes: 0, distance_km: 0 }]
-    }));
+      // Save to Supabase
+      const { error } = await supabase
+        .from('workout_plans')
+        .upsert(updatedExercises);
 
-    // Optimistic Update
-    const updatedLocal = [...workoutPlans, ...newPlans];
-    setWorkoutPlans(updatedLocal);
-    refreshLocalCache(updatedLocal);
-    setShowLibrary(false);
+      if (error) throw error;
 
-    // Cloud save
-    const { error } = await supabase.from('workout_plans').insert(
-      newPlans.map(({ id, ...rest }) => rest) // Remove temp ID for DB
-    );
-
-    if (error) {
-      toast.error("Cloud sync failed, saved locally.");
-    } else {
-      loadDayPlans(); // Get real DB IDs
+      // Save to Dexie (Local Success)
+      await localDB.syncPlans(day, updatedExercises);
+      alert("Changes saved and synced!");
+    } catch (error) {
+      // Fallback: Save locally if cloud fails
+      await localDB.syncPlans(day, exercises);
+      alert("Cloud sync failed, but changes are saved to your device!");
+    } finally {
+      setSaving(false);
     }
   };
 
-  const handleDeletePlan = async (planId) => {
-    const updatedLocal = workoutPlans.filter(p => p.id !== planId);
-    setWorkoutPlans(updatedLocal);
-    refreshLocalCache(updatedLocal);
-
-    const { error } = await supabase.from('workout_plans').delete().eq('id', planId);
-    if (error) toast.error("Failed to delete from cloud.");
+  const removeExercise = (id) => {
+    setExercises(exercises.filter(ex => ex.id !== id));
   };
 
-  const handleUpdatePlan = async (planId, updatedData) => {
-    const updatedLocal = workoutPlans.map(p => p.id === planId ? { ...p, ...updatedData } : p);
-    setWorkoutPlans(updatedLocal);
-    refreshLocalCache(updatedLocal);
-
-    await supabase.from('workout_plans').update({
-      sets: updatedData.sets,
-      notes: updatedData.notes,
-      order_index: updatedData.order_index
-    }).eq('id', planId);
-    
-    setEditingPlan(null);
-  };
-
-  if (loading && workoutPlans.length === 0) {
+  if (loading && exercises.length === 0) {
     return (
-      <div className="h-screen bg-black flex items-center justify-center">
-        <Loader2 className="animate-spin text-cyan-500" />
+      <div className="flex items-center justify-center h-screen bg-black">
+        <Loader2 className="animate-spin text-cyan-500" size={32} />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-black pb-24 text-white">
-      {/* Dynamic Header */}
-      <div className="bg-zinc-900/80 backdrop-blur-xl px-6 pt-8 pb-6 sticky top-0 z-10 border-b border-zinc-800">
-        <button onClick={() => navigate(-1)} className="mb-4 flex items-center gap-2 text-zinc-500">
-          <ArrowLeft size={20} /> <span className="text-[10px] font-black uppercase tracking-widest">Schedule</span>
-        </button>
-        
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-4xl font-black uppercase italic tracking-tighter">{day}</h1>
-            <p className="text-cyan-500 text-xs font-bold uppercase tracking-widest">
-              {workoutPlans.length} Exercises Planned
-            </p>
-          </div>
-          {workoutPlans.length > 0 && (
-            <button 
-              onClick={() => navigate(`/StartWorkout?day=${day}`)}
-              className="w-14 h-14 bg-cyan-500 rounded-full flex items-center justify-center shadow-lg shadow-cyan-500/40 active:scale-90 transition-transform"
-            >
-              <Play className="w-6 h-6 text-black fill-current ml-1" />
-            </button>
-          )}
+    <div className="min-h-screen bg-black text-white pb-24">
+      {/* Header */}
+      <div className="px-6 pt-8 pb-6 flex items-center justify-between sticky top-0 bg-black/80 backdrop-blur-md z-10">
+        <div className="flex items-center gap-4">
+          <button onClick={() => navigate(-1)} className="p-2 bg-zinc-900 rounded-xl">
+            <ChevronLeft size={20} />
+          </button>
+          <h1 className="text-xl font-black uppercase tracking-tighter italic">
+            {day} <span className="text-cyan-500">Plan</span>
+          </h1>
         </div>
+        <button 
+          onClick={handleSave}
+          disabled={saving}
+          className="bg-cyan-500 text-black px-4 py-2 rounded-xl font-black text-xs uppercase flex items-center gap-2 disabled:opacity-50"
+        >
+          {saving ? <Loader2 className="animate-spin" size={14} /> : <Save size={14} />}
+          {saving ? 'Saving...' : 'Save'}
+        </button>
       </div>
 
       {/* Exercise List */}
-      <div className="px-4 mt-6 space-y-3">
-        {workoutPlans.map((plan, index) => (
-          <div key={plan.id} className="bg-zinc-900 border border-zinc-800 rounded-3xl p-4 flex items-center gap-4 group">
-            <div className="text-zinc-700 group-active:text-cyan-500 transition-colors">
-              <GripVertical size={20} />
-            </div>
-
-            <div className="w-14 h-14 rounded-2xl bg-black border border-zinc-800 overflow-hidden flex-shrink-0">
-              {plan.exercise_image_url ? (
-                <img src={plan.exercise_image_url} className="w-full h-full object-cover" alt="" />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-xs font-black text-zinc-800">{index + 1}</div>
-              )}
-            </div>
-
-            <div className="flex-1 min-w-0">
-              <h3 className="font-bold text-white truncate">{plan.exercise_name}</h3>
-              <p className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
-                {plan.sets?.length || 0} Sets Configured
-              </p>
-            </div>
-
-            <div className="flex gap-2">
+      <div className="px-6 space-y-3">
+        {exercises.length === 0 ? (
+          <div className="py-20 text-center">
+            <Dumbbell size={48} className="mx-auto text-zinc-800 mb-4" />
+            <p className="text-zinc-500 font-bold uppercase text-xs tracking-widest">No exercises planned</p>
+          </div>
+        ) : (
+          exercises.map((exercise, index) => (
+            <div 
+              key={exercise.id || index}
+              className="bg-zinc-900 border border-zinc-800 rounded-2xl p-4 flex items-center justify-between group"
+            >
+              <div className="flex items-center gap-4">
+                <div className="text-zinc-600 group-active:text-cyan-500">
+                  <GripVertical size={20} />
+                </div>
+                <div>
+                  <h3 className="font-black uppercase italic text-sm">{exercise.exercise_name}</h3>
+                  <p className="text-[10px] text-zinc-500 font-bold uppercase">
+                    {exercise.sets} Sets • {exercise.reps} Reps
+                  </p>
+                </div>
+              </div>
               <button 
-                onClick={() => setEditingPlan(plan)}
-                className="p-3 bg-zinc-800 rounded-2xl text-cyan-500 active:bg-cyan-500 active:text-black transition-all"
+                onClick={() => removeExercise(exercise.id)}
+                className="p-2 text-zinc-700 hover:text-red-500 transition-colors"
               >
-                <Edit2 size={16} />
-              </button>
-              <button 
-                onClick={() => handleDeletePlan(plan.id)}
-                className="p-3 bg-zinc-800 rounded-2xl text-zinc-600 active:bg-red-500 active:text-white transition-all"
-              >
-                <Trash2 size={16} />
+                <Trash2 size={18} />
               </button>
             </div>
-          </div>
-        ))}
-        
-        <button 
-          onClick={() => setShowLibrary(true)}
-          className="w-full border-2 border-dashed border-zinc-800 rounded-3xl p-8 text-zinc-600 flex flex-col items-center gap-2 active:bg-zinc-900 transition-colors"
-        >
-          <div className="w-10 h-10 rounded-full bg-zinc-900 flex items-center justify-center">
-            <Plus size={24} />
-          </div>
-          <span className="font-black text-[10px] uppercase tracking-[0.2em]">Add Exercise</span>
-        </button>
+          ))
+        )}
       </div>
 
-      {showLibrary && (
-        <ExerciseLibrary 
-          onSelect={handleSelectExercise} 
-          onClose={() => setShowLibrary(false)} 
-        />
-      )}
-      
-      {editingPlan && (
-        <ExerciseSetsEditor 
-          plan={editingPlan} 
-          onSave={(data) => handleUpdatePlan(editingPlan.id, data)} 
-          onClose={() => setEditingPlan(null)} 
-        />
-      )}
+      {/* Add Button */}
+      <div className="fixed bottom-8 left-0 right-0 px-6">
+        <button 
+          onClick={() => navigate(`/ExerciseLibrary?day=${day}`)}
+          className="w-full bg-zinc-900 border border-zinc-700 py-4 rounded-2xl flex items-center justify-center gap-2 font-black uppercase text-xs tracking-widest active:scale-95 transition-transform"
+        >
+          <Plus size={18} /> Add Exercise
+        </button>
+      </div>
     </div>
   );
 }
