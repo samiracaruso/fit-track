@@ -9,7 +9,7 @@ import {
   Plus, 
   LayoutGrid, 
   ChevronRight, 
-  CloudSync,
+  RefreshCcw,
   Trophy
 } from "lucide-react";
 import { toast } from 'sonner';
