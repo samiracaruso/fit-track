@@ -2,42 +2,41 @@ import Dexie from 'dexie';
 
 export const db = new Dexie('WorkoutAppDB');
 
-// We use "++" for auto-incrementing IDs 
-// and no symbol for keys we provide (like Supabase UUIDs)
+// Version 2 Schema
 db.version(2).stores({
   plans: '++id, day_of_week, exercise_name',
-  history: 'id, date, status', // id is the Supabase session UUID
+  history: 'id, date, status', 
   exercises: 'id, name, target_muscle_group', 
-  active_workout: 'id' // static ID 'current_session'
+  active_workout: 'id' 
 });
 
 export const localDB = {
   // --- Plan Methods ---
-  // Note: Home.jsx called 'getPlanByDay', so we'll provide both or alias it
   getPlanByDay: async (day) => {
     return await db.plans.where('day_of_week').equals(day).toArray();
   },
 
-  getPlansByDay: async (day) => {
-    return await db.plans.where('day_of_week').equals(day).toArray();
-  },
-  
   savePlan: async (day, plans) => {
     return await db.transaction('rw', db.plans, async () => {
-      // Clear existing for that specific day before updating
+      // Clear existing records for this day to avoid duplicates on sync
       await db.plans.where('day_of_week').equals(day).delete();
-      if (plans.length > 0) {
-        await db.plans.bulkAdd(plans);
+      if (plans && plans.length > 0) {
+        const prepared = plans.map(p => ({ 
+          ...p, 
+          day_of_week: day,
+          // Remove internal Dexie ++id if it exists to let it auto-gen fresh ones
+          id: typeof p.id === 'string' ? p.id : undefined 
+        }));
+        await db.plans.bulkAdd(prepared);
       }
     });
   },
 
-  syncPlans: async (day, plans) => {
-    return await localDB.savePlan(day, plans);
+  deletePlanExercise: async (id) => {
+    return await db.plans.delete(id);
   },
 
   // --- History Methods ---
-  // put() handles both create and update
   saveSession: async (session) => {
     return await db.history.put(session);
   },
@@ -47,10 +46,6 @@ export const localDB = {
   },
 
   // --- Exercise Library Methods ---
-  async saveSingleExercise(exercise) {
-    return await db.exercises.put(exercise);
-  },
-
   async getAllExercises() {
     return await db.exercises.toArray();
   },
@@ -66,7 +61,6 @@ export const localDB = {
 
   // --- Active Session Methods ---
   async saveActiveSession(session) {
-    // We use a fixed ID so there is only ever ONE active session at a time
     return await db.active_workout.put({ 
       ...session, 
       id: 'current_session',
