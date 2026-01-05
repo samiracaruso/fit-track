@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '@/supabaseClient';
+import { localDB } from '@/api/localDB'; // Use Dexie service
 import { useNavigate } from 'react-router-dom';
 import { ArrowLeft, Plus, Search, Edit2, Trash2, Loader2, Dumbbell } from 'lucide-react';
 import { Input } from '@/components/ui/input';
@@ -17,14 +18,17 @@ export default function AdminExercises() {
 
   const loadExercises = async () => {
     try {
-      // 1. Try to load from Cache first for instant UI
-      const cached = localStorage.getItem('exercises_cache');
-      if (cached) {
-        setExercises(JSON.parse(cached));
+      setLoading(true);
+      
+      // 1. Try to load from Dexie first for instant UI
+      const cached = await localDB.getAllExercises();
+      if (cached && cached.length > 0) {
+        setExercises(cached);
+        // We set loading to false here because we have data to show
         setLoading(false);
       }
 
-      // 2. Fetch fresh data from Supabase
+      // 2. Fetch fresh data from Supabase to sync
       const { data, error } = await supabase
         .from('exercises')
         .select('*')
@@ -34,11 +38,12 @@ export default function AdminExercises() {
 
       if (data) {
         setExercises(data);
-        localStorage.setItem('exercises_cache', JSON.stringify(data));
+        // 3. Sync the fresh data to Dexie
+        await localDB.syncExercises(data);
       }
     } catch (error) {
       console.error('Offline or Error:', error);
-      // If we have no cache and no internet, show empty state
+      // Even if cloud fails, the cached Dexie data remains on screen
     } finally {
       setLoading(false);
     }
@@ -56,12 +61,12 @@ export default function AdminExercises() {
 
       if (error) throw error;
 
-      toast.success('Exercise deleted');
+      toast.success('Exercise deleted from cloud');
       
-      // Update local state and cache immediately
+      // 4. Update Dexie and Local State immediately
+      await localDB.db.exercises.delete(id);
       const updatedList = exercises.filter(ex => ex.id !== id);
       setExercises(updatedList);
-      localStorage.setItem('exercises_cache', JSON.stringify(updatedList));
       
     } catch (error) {
       toast.error('Failed to delete. Check your connection.');
@@ -122,8 +127,8 @@ export default function AdminExercises() {
             <p className="text-xs font-bold uppercase">Loading Library...</p>
           </div>
         ) : filteredExercises.length === 0 ? (
-          <div className="text-center py-20 text-zinc-500">
-            <p>No exercises found matching "{searchTerm}"</p>
+          <div className="text-center py-20 text-zinc-500 border-2 border-dashed border-zinc-900 rounded-3xl">
+            <p className="text-xs font-bold uppercase tracking-widest">No exercises found</p>
           </div>
         ) : (
           filteredExercises.map((exercise) => (
