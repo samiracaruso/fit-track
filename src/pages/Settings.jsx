@@ -1,20 +1,21 @@
 import React, { useState, useEffect } from 'react';
-import { base44 } from '@/api/base44Client';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Link } from 'react-router-dom';
-import { createPageUrl } from '@/utils';
+import { supabase } from '@/supabaseClient';
+import { localDB } from '@/api/localDB';
+import { useNavigate, Link } from 'react-router-dom';
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { ArrowLeft, User, Scale, Ruler, Calendar, Target, Activity, Save, Check } from "lucide-react";
+import { ArrowLeft, User, Scale, Ruler, Calendar, Target, Activity, Save, Loader2 } from "lucide-react";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
 
 export default function Settings() {
-  const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [isSaving, setIsSaving] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [user, setUser] = useState(null);
   const [formData, setFormData] = useState({
     weight_kg: '',
     height_cm: '',
@@ -24,54 +25,74 @@ export default function Settings() {
     goal: ''
   });
 
-  const { data: userMetrics, isLoading } = useQuery({
-    queryKey: ['userMetrics'],
-    queryFn: async () => {
-      const metrics = await base44.entities.UserMetrics.list();
-      return metrics[0];
-    }
-  });
-
   useEffect(() => {
-    if (userMetrics) {
-      setFormData({
-        weight_kg: userMetrics.weight_kg?.toString() || '',
-        height_cm: userMetrics.height_cm?.toString() || '',
-        age: userMetrics.age?.toString() || '',
-        gender: userMetrics.gender || '',
-        activity_level: userMetrics.activity_level || '',
-        goal: userMetrics.goal || ''
-      });
-    }
-  }, [userMetrics]);
+    loadSettings();
+  }, []);
 
-  const saveMutation = useMutation({
-    mutationFn: async (data) => {
-      const cleanedData = {
-        weight_kg: data.weight_kg ? Number(data.weight_kg) : null,
-        height_cm: data.height_cm ? Number(data.height_cm) : null,
-        age: data.age ? Number(data.age) : null,
-        gender: data.gender || null,
-        activity_level: data.activity_level || null,
-        goal: data.goal || null
-      };
+  const loadSettings = async () => {
+    try {
+      setIsLoading(true);
+      const { data: { user: currentUser } } = await supabase.auth.getUser();
+      setUser(currentUser);
 
-      if (userMetrics?.id) {
-        return base44.entities.UserMetrics.update(userMetrics.id, cleanedData);
-      } else {
-        return base44.entities.UserMetrics.create(cleanedData);
+      // Check Supabase for metrics
+      const { data: metrics, error } = await supabase
+        .from('user_metrics')
+        .select('*')
+        .eq('user_id', currentUser.id)
+        .maybeSingle();
+
+      if (metrics) {
+        setFormData({
+          weight_kg: metrics.weight_kg?.toString() || '',
+          height_cm: metrics.height_cm?.toString() || '',
+          age: metrics.age?.toString() || '',
+          gender: metrics.gender || '',
+          activity_level: metrics.activity_level || '',
+          goal: metrics.goal || ''
+        });
       }
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['userMetrics'] });
-      toast.success('Settings saved successfully');
+    } catch (error) {
+      console.error('Error loading settings:', error);
+      toast.error("Failed to load settings");
+    } finally {
+      setIsLoading(false);
     }
-  });
+  };
 
   const handleSave = async () => {
+    if (!user) return;
     setIsSaving(true);
-    await saveMutation.mutateAsync(formData);
-    setIsSaving(false);
+    
+    const cleanedData = {
+      user_id: user.id,
+      weight_kg: formData.weight_kg ? Number(formData.weight_kg) : null,
+      height_cm: formData.height_cm ? Number(formData.height_cm) : null,
+      age: formData.age ? Number(formData.age) : null,
+      gender: formData.gender || null,
+      activity_level: formData.activity_level || null,
+      goal: formData.goal || null,
+      updated_at: new Date().toISOString()
+    };
+
+    try {
+      // 1. Save to Supabase
+      const { error } = await supabase
+        .from('user_metrics')
+        .upsert(cleanedData);
+
+      if (error) throw error;
+
+      // 2. Note: If you choose to add a 'settings' table to Dexie, 
+      // you would also update it here for offline calc access.
+      
+      toast.success('Settings saved successfully');
+    } catch (error) {
+      console.error(error);
+      toast.error('Error saving settings');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const calculateBMI = () => {
@@ -85,151 +106,125 @@ export default function Settings() {
 
   const getBMICategory = (bmi) => {
     if (!bmi) return null;
-    if (bmi < 18.5) return { label: 'Underweight', color: 'text-blue-400' };
-    if (bmi < 25) return { label: 'Normal', color: 'text-emerald-400' };
-    if (bmi < 30) return { label: 'Overweight', color: 'text-amber-400' };
+    const val = parseFloat(bmi);
+    if (val < 18.5) return { label: 'Underweight', color: 'text-blue-400' };
+    if (val < 25) return { label: 'Normal', color: 'text-emerald-400' };
+    if (val < 30) return { label: 'Overweight', color: 'text-amber-400' };
     return { label: 'Obese', color: 'text-red-400' };
   };
 
   const bmi = calculateBMI();
   const bmiCategory = getBMICategory(bmi);
 
+  if (isLoading) {
+    return (
+      <div className="h-screen bg-black flex items-center justify-center">
+        <Loader2 className="animate-spin text-emerald-500" size={32} />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-black text-white pb-8">
       {/* Header */}
       <div className="sticky top-0 z-10 bg-black/90 backdrop-blur-lg border-b border-zinc-800">
         <div className="px-4 py-4 flex items-center gap-3">
-          <Link to={createPageUrl('Home')}>
-            <Button size="icon" variant="ghost" className="text-zinc-400">
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
-          </Link>
-          <h1 className="text-xl font-bold">Settings</h1>
+          <Button 
+            size="icon" 
+            variant="ghost" 
+            className="text-zinc-400"
+            onClick={() => navigate('/Home')}
+          >
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
+          <h1 className="text-xl font-bold uppercase italic tracking-tighter">Settings</h1>
         </div>
       </div>
 
       <div className="px-4 py-6 space-y-6">
-        {/* Profile Section */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-        >
-          <Card className="bg-zinc-900/80 border-zinc-800 p-6">
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+          <Card className="bg-zinc-900 border-zinc-800 p-6 rounded-3xl">
             <div className="flex items-center gap-4 mb-6">
-              <div className="w-16 h-16 rounded-full bg-emerald-500/20 flex items-center justify-center">
-                <User className="h-8 w-8 text-emerald-400" />
+              <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 flex items-center justify-center border border-emerald-500/20">
+                <User className="h-6 w-6 text-emerald-500" />
               </div>
               <div>
-                <h2 className="text-lg font-semibold text-white">Your Metrics</h2>
-                <p className="text-sm text-zinc-400">Used for calorie calculations</p>
+                <h2 className="text-sm font-black uppercase tracking-widest text-white">Body Metrics</h2>
+                <p className="text-[10px] font-bold text-zinc-500 uppercase">For precise tracking</p>
               </div>
             </div>
 
-            <div className="space-y-4">
-              {/* Weight */}
-              <div>
-                <Label className="text-zinc-400 flex items-center gap-2">
-                  <Scale className="h-4 w-4" />
-                  Weight (kg)
-                </Label>
-                <Input
-                  type="number"
-                  placeholder="70"
-                  value={formData.weight_kg}
-                  onChange={(e) => setFormData({ ...formData, weight_kg: e.target.value })}
-                  className="mt-1 bg-zinc-800 border-zinc-700 text-white"
-                />
+            <div className="space-y-5">
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label className="text-[10px] font-black uppercase text-zinc-500 ml-1">Weight (kg)</Label>
+                  <Input
+                    type="number"
+                    value={formData.weight_kg}
+                    onChange={(e) => setFormData({ ...formData, weight_kg: e.target.value })}
+                    className="bg-black border-zinc-800 text-white h-12 rounded-xl focus:ring-emerald-500"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-[10px] font-black uppercase text-zinc-500 ml-1">Height (cm)</Label>
+                  <Input
+                    type="number"
+                    value={formData.height_cm}
+                    onChange={(e) => setFormData({ ...formData, height_cm: e.target.value })}
+                    className="bg-black border-zinc-800 text-white h-12 rounded-xl focus:ring-emerald-500"
+                  />
+                </div>
               </div>
 
-              {/* Height */}
-              <div>
-                <Label className="text-zinc-400 flex items-center gap-2">
-                  <Ruler className="h-4 w-4" />
-                  Height (cm)
-                </Label>
-                <Input
-                  type="number"
-                  placeholder="175"
-                  value={formData.height_cm}
-                  onChange={(e) => setFormData({ ...formData, height_cm: e.target.value })}
-                  className="mt-1 bg-zinc-800 border-zinc-700 text-white"
-                />
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <Label className="text-[10px] font-black uppercase text-zinc-500 ml-1">Age</Label>
+                  <Input
+                    type="number"
+                    value={formData.age}
+                    onChange={(e) => setFormData({ ...formData, age: e.target.value })}
+                    className="bg-black border-zinc-800 text-white h-12 rounded-xl focus:ring-emerald-500"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-[10px] font-black uppercase text-zinc-500 ml-1">Gender</Label>
+                  <Select value={formData.gender} onValueChange={(v) => setFormData({ ...formData, gender: v })}>
+                    <SelectTrigger className="bg-black border-zinc-800 h-12 rounded-xl">
+                      <SelectValue placeholder="Select" />
+                    </SelectTrigger>
+                    <SelectContent className="bg-zinc-900 border-zinc-800 text-white">
+                      <SelectItem value="male">Male</SelectItem>
+                      <SelectItem value="female">Female</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
-              {/* Age */}
-              <div>
-                <Label className="text-zinc-400 flex items-center gap-2">
-                  <Calendar className="h-4 w-4" />
-                  Age
-                </Label>
-                <Input
-                  type="number"
-                  placeholder="25"
-                  value={formData.age}
-                  onChange={(e) => setFormData({ ...formData, age: e.target.value })}
-                  className="mt-1 bg-zinc-800 border-zinc-700 text-white"
-                />
-              </div>
-
-              {/* Gender */}
-              <div>
-                <Label className="text-zinc-400">Gender</Label>
-                <Select 
-                  value={formData.gender} 
-                  onValueChange={(value) => setFormData({ ...formData, gender: value })}
-                >
-                  <SelectTrigger className="mt-1 bg-zinc-800 border-zinc-700 text-white">
-                    <SelectValue placeholder="Select gender" />
+              <div className="space-y-1.5">
+                <Label className="text-[10px] font-black uppercase text-zinc-500 ml-1">Activity Level</Label>
+                <Select value={formData.activity_level} onValueChange={(v) => setFormData({ ...formData, activity_level: v })}>
+                  <SelectTrigger className="bg-black border-zinc-800 h-12 rounded-xl">
+                    <SelectValue placeholder="Select level" />
                   </SelectTrigger>
-                  <SelectContent className="bg-zinc-900 border-zinc-800">
-                    <SelectItem value="male">Male</SelectItem>
-                    <SelectItem value="female">Female</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
+                  <SelectContent className="bg-zinc-900 border-zinc-800 text-white">
+                    <SelectItem value="sedentary">Sedentary</SelectItem>
+                    <SelectItem value="light">Light (1-3 days)</SelectItem>
+                    <SelectItem value="moderate">Moderate (3-5 days)</SelectItem>
+                    <SelectItem value="active">Active (6-7 days)</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
 
-              {/* Activity Level */}
-              <div>
-                <Label className="text-zinc-400 flex items-center gap-2">
-                  <Activity className="h-4 w-4" />
-                  Activity Level
-                </Label>
-                <Select 
-                  value={formData.activity_level} 
-                  onValueChange={(value) => setFormData({ ...formData, activity_level: value })}
-                >
-                  <SelectTrigger className="mt-1 bg-zinc-800 border-zinc-700 text-white">
-                    <SelectValue placeholder="Select activity level" />
+              <div className="space-y-1.5">
+                <Label className="text-[10px] font-black uppercase text-zinc-500 ml-1">Fitness Goal</Label>
+                <Select value={formData.goal} onValueChange={(v) => setFormData({ ...formData, goal: v })}>
+                  <SelectTrigger className="bg-black border-zinc-800 h-12 rounded-xl">
+                    <SelectValue placeholder="Select goal" />
                   </SelectTrigger>
-                  <SelectContent className="bg-zinc-900 border-zinc-800">
-                    <SelectItem value="sedentary">Sedentary (little or no exercise)</SelectItem>
-                    <SelectItem value="light">Light (1-3 days/week)</SelectItem>
-                    <SelectItem value="moderate">Moderate (3-5 days/week)</SelectItem>
-                    <SelectItem value="active">Active (6-7 days/week)</SelectItem>
-                    <SelectItem value="very_active">Very Active (intense daily)</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {/* Goal */}
-              <div>
-                <Label className="text-zinc-400 flex items-center gap-2">
-                  <Target className="h-4 w-4" />
-                  Fitness Goal
-                </Label>
-                <Select 
-                  value={formData.goal} 
-                  onValueChange={(value) => setFormData({ ...formData, goal: value })}
-                >
-                  <SelectTrigger className="mt-1 bg-zinc-800 border-zinc-700 text-white">
-                    <SelectValue placeholder="Select your goal" />
-                  </SelectTrigger>
-                  <SelectContent className="bg-zinc-900 border-zinc-800">
+                  <SelectContent className="bg-zinc-900 border-zinc-800 text-white">
                     <SelectItem value="lose_weight">Lose Weight</SelectItem>
-                    <SelectItem value="maintain">Maintain Weight</SelectItem>
+                    <SelectItem value="maintain">Maintain</SelectItem>
                     <SelectItem value="build_muscle">Build Muscle</SelectItem>
-                    <SelectItem value="improve_fitness">Improve Fitness</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -237,62 +232,25 @@ export default function Settings() {
           </Card>
         </motion.div>
 
-        {/* BMI Card */}
         {bmi && (
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-          >
-            <Card className="bg-gradient-to-br from-zinc-900 to-zinc-800 border-zinc-700 p-6">
-              <h3 className="text-sm text-zinc-400 uppercase tracking-wider mb-2">Body Mass Index</h3>
-              <div className="flex items-end gap-2">
-                <span className="text-4xl font-bold text-white">{bmi}</span>
-                {bmiCategory && (
-                  <span className={`text-sm font-medium mb-1 ${bmiCategory.color}`}>
-                    {bmiCategory.label}
-                  </span>
-                )}
-              </div>
-              <div className="mt-4 h-2 bg-zinc-700 rounded-full overflow-hidden">
-                <div 
-                  className="h-full bg-gradient-to-r from-blue-500 via-emerald-500 via-amber-500 to-red-500"
-                  style={{ width: '100%' }}
-                />
-              </div>
-              <div className="flex justify-between mt-1 text-xs text-zinc-500">
-                <span>18.5</span>
-                <span>25</span>
-                <span>30</span>
-              </div>
-            </Card>
-          </motion.div>
+          <Card className="bg-zinc-900 border-zinc-800 p-6 rounded-3xl">
+            <p className="text-[10px] font-black uppercase text-zinc-500 tracking-widest mb-1">Current BMI</p>
+            <div className="flex items-baseline gap-3">
+              <span className="text-4xl font-black italic">{bmi}</span>
+              <span className={`text-xs font-black uppercase tracking-wider ${bmiCategory.color}`}>
+                {bmiCategory.label}
+              </span>
+            </div>
+          </Card>
         )}
 
-        {/* Save Button */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
+        <Button 
+          className="w-full h-14 bg-emerald-500 hover:bg-emerald-600 text-black font-black uppercase tracking-[0.2em] rounded-2xl shadow-lg shadow-emerald-500/20"
+          onClick={handleSave}
+          disabled={isSaving}
         >
-          <Button 
-            className="w-full h-12 bg-emerald-500 hover:bg-emerald-600 text-black font-semibold"
-            onClick={handleSave}
-            disabled={isSaving}
-          >
-            {isSaving ? (
-              <span className="flex items-center gap-2">
-                <div className="w-4 h-4 border-2 border-black/30 border-t-black rounded-full animate-spin" />
-                Saving...
-              </span>
-            ) : (
-              <span className="flex items-center gap-2">
-                <Save className="h-4 w-4" />
-                Save Settings
-              </span>
-            )}
-          </Button>
-        </motion.div>
+          {isSaving ? <Loader2 className="animate-spin" /> : "Save Settings"}
+        </Button>
       </div>
     </div>
   );
