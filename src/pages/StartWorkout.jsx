@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '@/supabaseClient';
+import { localDB } from '@/api/localDB';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, CheckCircle2, Circle, Dumbbell, Save } from 'lucide-react';
+import { ArrowLeft, CheckCircle2, Circle, Dumbbell, Save, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 
@@ -21,15 +22,13 @@ export default function StartWorkout() {
     try {
       setLoading(true);
       
-      // 1. TRY LOCAL STORAGE FIRST (Offline Goal)
-      const cachedPlan = localStorage.getItem(`plan_${dayName}`);
-      if (cachedPlan) {
-        setExercises(JSON.parse(cachedPlan));
-        setLoading(false);
-        // We still fetch from Supabase in background to update the cache for next time
+      // 1. Load from Dexie first (Immediate/Offline)
+      const cachedPlan = await localDB.getPlanByDay(dayName);
+      if (cachedPlan && cachedPlan.length > 0) {
+        setExercises(cachedPlan.map(ex => ({ ...ex, completed: false })));
       }
 
-      // 2. FETCH FROM SUPABASE (To refresh cache)
+      // 2. Refresh from Supabase to keep Dexie up to date
       const { data: { user } } = await supabase.auth.getUser();
       const { data: plans, error } = await supabase
         .from('workout_plans')
@@ -48,11 +47,11 @@ export default function StartWorkout() {
         }));
         
         setExercises(formatted);
-        // Update the offline cache
-        localStorage.setItem(`plan_${dayName}`, JSON.stringify(formatted));
+        // Sync these to Dexie for next time
+        await localDB.savePlan(dayName, formatted);
       }
     } catch (err) {
-      console.log("Working offline using cached data.");
+      console.log("Running in offline mode.");
     } finally {
       setLoading(false);
     }
@@ -63,83 +62,111 @@ export default function StartWorkout() {
     newExercises[index].completed = !newExercises[index].completed;
     setExercises(newExercises);
     
-    // Save current session state locally so you don't lose progress if the app closes
-    localStorage.setItem(`active_session`, JSON.stringify(newExercises));
+    // Optional: Keep active session state in Dexie if user accidentally refreshes
+    // localDB.sessions.put({ id: 'active', exercises: newExercises });
   };
 
   const completeWorkout = async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    
     const sessionData = {
-      date: format(new Date(), 'yyyy-MM-dd'),
+      user_id: user?.id,
+      date: new Date().toISOString(),
+      day_of_week: dayName,
       exercises: exercises,
       status: 'completed'
     };
 
-    // 1. SAVE LOCALLY (Immediate)
-    const history = JSON.parse(localStorage.getItem('workout_history') || '[]');
-    history.push(sessionData);
-    localStorage.setItem('workout_history', JSON.stringify(history));
+    try {
+      // 1. Save to Dexie immediately (History table)
+      await localDB.saveSession(sessionData);
 
-    // 2. ATTEMPT CLOUD SYNC (Background)
-    const { data: { user } } = await supabase.auth.getUser();
-    const { error } = await supabase.from('workout_sessions').insert([{
-      user_id: user.id,
-      date: sessionData.date,
-      status: 'completed',
-      exercises: sessionData.exercises
-    }]);
+      // 2. Background Sync to Supabase
+      const { error } = await supabase
+        .from('workout_sessions')
+        .insert([sessionData]);
 
-    if (error) {
-      toast.info("Saved locally. Will sync to cloud when online.");
-    } else {
-      toast.success("Workout synced to cloud!");
+      if (error) {
+        toast.info("Saved locally. Will sync when online.");
+      } else {
+        toast.success("Workout saved and synced!");
+      }
+
+      navigate('/');
+    } catch (err) {
+      toast.error("Failed to save workout");
+      console.error(err);
     }
-
-    localStorage.removeItem('active_session');
-    navigate('/');
   };
 
-  if (loading) return <div className="h-screen bg-[#0a0a0a] flex items-center justify-center"><div className="animate-spin h-8 w-8 border-t-2 border-cyan-500 rounded-full" /></div>;
+  if (loading) {
+    return (
+      <div className="h-screen bg-black flex items-center justify-center">
+        <Loader2 className="animate-spin text-cyan-500" size={32} />
+      </div>
+    );
+  }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white p-6">
-      <header className="flex items-center gap-4 mb-8">
-        <button onClick={() => navigate('/')}><ArrowLeft /></button>
-        <h1 className="text-2xl font-bold capitalize">{dayName} Routine</h1>
-      </header>
+    <div className="min-h-screen bg-black text-white pb-24">
+      {/* Header */}
+      <div className="bg-zinc-900/50 backdrop-blur-xl px-6 pt-8 pb-6 border-b border-zinc-800">
+        <button onClick={() => navigate('/')} className="mb-4 flex items-center gap-2 text-zinc-500">
+          <ArrowLeft size={20} /> <span className="text-[10px] font-black uppercase tracking-widest">Back</span>
+        </button>
+        <h1 className="text-3xl font-black uppercase italic tracking-tighter">
+          {dayName} <span className="text-cyan-500">Session</span>
+        </h1>
+      </div>
 
-      <div className="space-y-4 mb-24">
-        {exercises.length > 0 ? exercises.map((ex, i) => (
-          <div 
-            key={i}
-            onClick={() => toggleExercise(i)}
-            className={`p-4 rounded-2xl border transition-all ${ex.completed ? 'bg-green-500/10 border-green-500' : 'bg-[#1a1a1a] border-[#2a2a2a]'}`}
-          >
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-4">
-                {ex.completed ? <CheckCircle2 className="text-green-500" /> : <Circle className="text-gray-500" />}
-                <div>
-                  <p className="font-bold">{ex.name}</p>
-                  <p className="text-sm text-gray-400">{ex.sets} sets × {ex.reps} reps</p>
+      <div className="px-6 mt-6 space-y-4">
+        {exercises.length > 0 ? (
+          exercises.map((ex, i) => (
+            <div 
+              key={i}
+              onClick={() => toggleExercise(i)}
+              className={`p-5 rounded-3xl border-2 transition-all cursor-pointer ${
+                ex.completed 
+                ? 'bg-cyan-500/10 border-cyan-500 shadow-[0_0_15px_rgba(6,182,212,0.1)]' 
+                : 'bg-zinc-900 border-zinc-800'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className={`transition-colors ${ex.completed ? 'text-cyan-500' : 'text-zinc-700'}`}>
+                    {ex.completed ? <CheckCircle2 size={28} /> : <Circle size={28} />}
+                  </div>
+                  <div>
+                    <p className={`font-black uppercase italic tracking-tight ${ex.completed ? 'text-white' : 'text-zinc-400'}`}>
+                      {ex.name}
+                    </p>
+                    <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-widest">
+                      {ex.sets} sets • {ex.reps} reps
+                    </p>
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        )) : (
-          <div className="text-center py-12 text-gray-500">
-            <Dumbbell className="mx-auto mb-4 opacity-20" size={48} />
-            <p>No exercises found for today.</p>
+          ))
+        ) : (
+          <div className="text-center py-20 bg-zinc-900 rounded-3xl border-2 border-dashed border-zinc-800">
+            <Dumbbell className="mx-auto mb-4 text-zinc-700" size={48} />
+            <p className="text-zinc-500 font-black uppercase text-xs tracking-widest">No routine found</p>
           </div>
         )}
       </div>
 
-      <div className="fixed bottom-6 left-6 right-6">
-        <button 
-          onClick={completeWorkout}
-          className="w-full bg-cyan-500 text-black font-bold py-4 rounded-2xl flex items-center justify-center gap-2"
-        >
-          <Save size={20} /> Finish & Save
-        </button>
-      </div>
+      {/* Floating Action Button */}
+      {exercises.length > 0 && (
+        <div className="fixed bottom-8 left-6 right-6">
+          <button 
+            onClick={completeWorkout}
+            className="w-full bg-cyan-500 text-black h-16 rounded-2xl font-black uppercase tracking-[0.2em] flex items-center justify-center gap-3 shadow-xl shadow-cyan-500/20 active:scale-95 transition-transform"
+          >
+            <Save size={20} /> Finish Workout
+          </button>
+        </div>
+      )}
     </div>
   );
 }
