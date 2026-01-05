@@ -1,129 +1,79 @@
+import React, { useState, useEffect } from 'react';
+import { BrowserRouter as Router, Route, Routes, Navigate } from 'react-router-dom';
+import { supabase } from '@/supabaseClient';
 import Layout from "./Layout.jsx";
 
-import ActiveSession from "./ActiveSession";
-
-import ActiveWorkout from "./ActiveWorkout";
-
-import Admin from "./Admin";
-
-import AdminExerciseEdit from "./AdminExerciseEdit";
-
-import AdminExercises from "./AdminExercises";
-
-import Calendar from "./Calendar";
-
-import DayPlan from "./DayPlan";
-
-import EditWorkout from "./EditWorkout";
-
+// Import all your pages
+import Auth from "./Auth";
 import Home from "./Home";
-
+import ActiveSession from "./ActiveSession";
+import DayPlan from "./DayPlan";
 import Profile from "./Profile";
-
-import Settings from "./Settings";
-
-import StartWorkout from "./StartWorkout";
-
-import WeeklyPlan from "./WeeklyPlan";
-
 import WorkoutHistory from "./WorkoutHistory";
+import WeeklyPlan from "./WeeklyPlan";
+// ... (import other pages as needed)
 
-import { BrowserRouter as Router, Route, Routes, useLocation } from 'react-router-dom';
-
-const PAGES = {
-    
-    ActiveSession: ActiveSession,
-    
-    ActiveWorkout: ActiveWorkout,
-    
-    Admin: Admin,
-    
-    AdminExerciseEdit: AdminExerciseEdit,
-    
-    AdminExercises: AdminExercises,
-    
-    Calendar: Calendar,
-    
-    DayPlan: DayPlan,
-    
-    EditWorkout: EditWorkout,
-    
-    Home: Home,
-    
-    Profile: Profile,
-    
-    Settings: Settings,
-    
-    StartWorkout: StartWorkout,
-    
-    WeeklyPlan: WeeklyPlan,
-    
-    WorkoutHistory: WorkoutHistory,
-    
-}
-
-function _getCurrentPage(url) {
-    if (url.endsWith('/')) {
-        url = url.slice(0, -1);
-    }
-    let urlLastPart = url.split('/').pop();
-    if (urlLastPart.includes('?')) {
-        urlLastPart = urlLastPart.split('?')[0];
-    }
-
-    const pageName = Object.keys(PAGES).find(page => page.toLowerCase() === urlLastPart.toLowerCase());
-    return pageName || Object.keys(PAGES)[0];
-}
-
-// Create a wrapper component that uses useLocation inside the Router context
 function PagesContent() {
-    const location = useLocation();
-    const currentPage = _getCurrentPage(location.pathname);
-    
+  const [session, setSession] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    // 1. Get initial session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setLoading(false);
+    });
+
+    // 2. Listen for login/logout changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session);
+      setLoading(false);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  if (loading) {
     return (
-        <Layout currentPageName={currentPage}>
-            <Routes>            
-                
-                    <Route path="/" element={<Home />} />
-                
-                
-                <Route path="/ActiveSession" element={<ActiveSession />} />
-                
-                <Route path="/ActiveWorkout" element={<ActiveWorkout />} />
-                
-                <Route path="/Admin" element={<Admin />} />
-                
-                <Route path="/AdminExerciseEdit" element={<AdminExerciseEdit />} />
-                
-                <Route path="/AdminExercises" element={<AdminExercises />} />
-                
-                <Route path="/Calendar" element={<Calendar />} />
-                
-                <Route path="/DayPlan" element={<DayPlan />} />
-                
-                <Route path="/EditWorkout" element={<EditWorkout />} />
-                
-                <Route path="/Home" element={<Home />} />
-                
-                <Route path="/Profile" element={<Profile />} />
-                
-                <Route path="/Settings" element={<Settings />} />
-                
-                <Route path="/StartWorkout" element={<StartWorkout />} />
-                
-                <Route path="/WeeklyPlan" element={<WeeklyPlan />} />
-                
-                <Route path="/WorkoutHistory" element={<WorkoutHistory />} />
-                
-            </Routes>
-        </Layout>
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="w-10 h-10 border-4 border-cyan-500 border-t-transparent rounded-full animate-spin"></div>
+      </div>
     );
+  }
+
+  return (
+    <Layout>
+      <Routes>
+        {/* If NO session, everything redirects to Auth */}
+        {!session ? (
+          <>
+            <Route path="/Auth" element={<Auth />} />
+            <Route path="*" element={<Navigate to="/Auth" replace />} />
+          </>
+        ) : (
+          /* If YES session, allow all routes and redirect Auth to Home */
+          <>
+            <Route path="/Auth" element={<Navigate to="/Home" replace />} />
+            <Route path="/" element={<Home />} />
+            <Route path="/Home" element={<Home />} />
+            <Route path="/ActiveSession" element={<ActiveSession />} />
+            <Route path="/DayPlan" element={<DayPlan />} />
+            <Route path="/Profile" element={<Profile />} />
+            <Route path="/WeeklyPlan" element={<WeeklyPlan />} />
+            <Route path="/WorkoutHistory" element={<WorkoutHistory />} />
+            {/* Catch-all for logged in users */}
+            <Route path="*" element={<Navigate to="/Home" replace />} />
+          </>
+        )}
+      </Routes>
+    </Layout>
+  );
 }
 
 export default function Pages() {
-    return (
-        <Router>
-            <PagesContent />
-        </Router>
-    );
+  return (
+    <Router>
+      <PagesContent />
+    </Router>
+  );
 }
