@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '@/supabaseClient';
+import { localDB } from '@/api/localDB'; // Import Dexie service
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft, Save, CheckCircle2, Circle, Edit3, Plus, X, Trash2, Loader2 } from 'lucide-react';
 import { format } from 'date-fns';
@@ -24,16 +25,31 @@ export default function EditWorkout() {
 
   const loadSession = async () => {
     try {
+      setLoading(true);
+      
+      // 1. Try Dexie first for instant load
+      const cachedSessions = await localDB.getHistory();
+      const localMatch = cachedSessions.find(s => s.id === sessionId || s.id === Number(sessionId));
+      
+      if (localMatch) {
+        setSession(localMatch);
+        setExercises(localMatch.exercises || []);
+      }
+
+      // 2. Sync with Supabase
       const { data, error } = await supabase
         .from('workout_sessions')
         .select('*')
         .eq('id', sessionId)
         .single();
 
-      if (error) throw error;
+      if (error && !localMatch) throw error;
+      
       if (data) {
         setSession(data);
         setExercises(data.exercises || []);
+        // Update cache
+        await localDB.saveSession(data);
       }
     } catch (error) {
       toast.error("Couldn't load session data");
@@ -66,33 +82,47 @@ export default function EditWorkout() {
   const handleSave = async () => {
     setSaving(true);
     try {
-      // Simple calorie estimation logic
       const totalCalories = exercises.reduce((acc, ex) => {
         if (!ex.completed) return acc;
-        const setWeight = ex.sets?.length * 15 || 0; // Placeholder logic: 15 cals per exercise
+        const setWeight = ex.sets?.length * 15 || 0;
         return acc + setWeight;
       }, 0);
 
-      const { error } = await supabase
+      const updatedFields = {
+        exercises,
+        total_calories_burned: totalCalories 
+      };
+
+      // 1. Save to Supabase
+      const { data, error } = await supabase
         .from('workout_sessions')
-        .update({ 
-          exercises,
-          total_calories_burned: totalCalories 
-        })
-        .eq('id', sessionId);
+        .update(updatedFields)
+        .eq('id', sessionId)
+        .select()
+        .single();
 
       if (error) throw error;
       
-      toast.success("Workout updated successfully");
+      // 2. Save to Dexie for offline consistency
+      if (data) {
+        await localDB.saveSession(data);
+      }
+      
+      toast.success("Workout updated and synced");
       navigate('/WorkoutHistory');
     } catch (error) {
-      toast.error("Failed to save changes");
+      console.error("Save error:", error);
+      // 3. Fallback: Save locally if cloud fails
+      const fallbackData = { ...session, exercises };
+      await localDB.saveSession(fallbackData);
+      toast.error("Cloud sync failed, saved to device locally");
+      navigate('/WorkoutHistory');
     } finally {
       setSaving(false);
     }
   };
 
-  if (loading) return (
+  if (loading && !session) return (
     <div className="h-screen bg-black flex items-center justify-center">
       <Loader2 className="animate-spin text-cyan-500" />
     </div>
@@ -126,7 +156,6 @@ export default function EditWorkout() {
               </button>
             </div>
 
-            {/* Set Summary View */}
             <div className="flex flex-wrap gap-2 mb-4">
               {ex.sets?.map((set, sIdx) => (
                 <div key={sIdx} className="bg-black px-3 py-1 rounded-lg border border-zinc-800 text-[10px] font-bold">
@@ -180,7 +209,6 @@ export default function EditWorkout() {
   );
 }
 
-// Internal Modal for modifying specific sets
 function ExerciseEditModal({ exercise, onSave, onClose }) {
   const [sets, setSets] = useState(exercise.sets || [{ reps: 0, weight_kg: 0, completed: true }]);
 
