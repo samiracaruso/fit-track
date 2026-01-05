@@ -4,7 +4,7 @@ import { localDB, db } from '@/api/localDB';
 import { Button } from "@/components/ui/button";
 import { 
   ChevronLeft, Plus, Trash2, Dumbbell, X, 
-  Search, Info, Star 
+  Search, Info, Star, Filter, Check 
 } from "lucide-react";
 import { toast } from 'sonner';
 
@@ -12,210 +12,176 @@ export default function DayPlan() {
   const { day } = useParams();
   const navigate = useNavigate();
   
-  // State Management
   const [exercises, setExercises] = useState([]);
   const [isAdding, setIsAdding] = useState(false);
   const [catalog, setCatalog] = useState([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [activeFilter, setActiveFilter] = useState('All');
+  
+  // Selection Preview State
+  const [selectedEx, setSelectedEx] = useState(null);
+  const [config, setConfig] = useState({ sets: 3, reps: 10, weight: 0 });
 
-  // Initial Load
   useEffect(() => {
-    if (!day) {
-      navigate('/WeeklyPlan');
-      return;
-    }
-
     async function init() {
-      try {
-        const plan = await localDB.getPlanByDay(day);
-        const allEx = await localDB.getAllExercises();
-        setExercises(plan);
-        setCatalog(allEx);
-      } catch (err) {
-        console.error("Failed to load DayPlan:", err);
-        toast.error("Error loading workout data");
-      }
+      const plan = await localDB.getPlanByDay(day);
+      // Fetch and Sort Alphabetically
+      const allEx = await localDB.getAllExercises();
+      setCatalog(allEx.sort((a, b) => a.name.localeCompare(b.name)));
+      setExercises(plan);
     }
     init();
-  }, [day, navigate]);
+  }, [day]);
 
-  // Logic: Add Exercise to Local DB and Sync Queue
-  const addExerciseToPlan = async (baseEx) => {
+  // Filter Logic
+  const categories = ['All', 'Chest', 'Back', 'Legs', 'Shoulders', 'Arms', 'Cardio', 'Favorites'];
+  const filteredCatalog = catalog.filter(ex => {
+    const matchesSearch = ex.name.toLowerCase().includes(searchQuery.toLowerCase());
+    if (activeFilter === 'All') return matchesSearch;
+    if (activeFilter === 'Favorites') return matchesSearch && ex.is_favorite;
+    return matchesSearch && ex.muscle_group === activeFilter;
+  });
+
+  const confirmAdd = async () => {
     const newEntry = {
       day_of_week: day.toLowerCase(),
-      exercise_id: baseEx.id,
-      exercise_name: baseEx.name,
-      image_url: baseEx.image_url,
-      muscle_group: baseEx.muscle_group,
-      target_sets: 3,
-      target_reps: 10,
-      target_weight_kg: 0
+      exercise_id: selectedEx.id,
+      exercise_name: selectedEx.name,
+      image_url: selectedEx.image_url,
+      target_sets: config.sets,
+      target_reps: config.reps,
+      target_weight_kg: config.weight,
+      // Restoring the "Feature Toggles" from your Supabase schema
+      show_reps: selectedEx.show_reps ?? true,
+      show_weight: selectedEx.show_weight ?? true,
+      show_distance: selectedEx.show_distance ?? false,
+      show_time: selectedEx.show_time ?? false
     };
 
-    try {
-      const id = await db.plans.add(newEntry);
-      // Push to sync queue for Base 44
-      await localDB.addToQueue('plans', 'INSERT', { ...newEntry, id });
-      
-      setExercises([...exercises, { ...newEntry, id }]);
-      setIsAdding(false);
-      setSearchQuery("");
-      toast.success(`Added ${baseEx.name} to ${day}`);
-    } catch (err) {
-      toast.error("Failed to save exercise");
-    }
+    const id = await db.plans.add(newEntry);
+    await localDB.addToQueue('plans', 'INSERT', { ...newEntry, id });
+    setExercises([...exercises, { ...newEntry, id }]);
+    setSelectedEx(null);
+    setIsAdding(false);
+    toast.success(`Added ${selectedEx.name}`);
   };
-
-  // Logic: Remove Exercise
-  const removeExercise = async (id) => {
-    try {
-      await db.plans.delete(id);
-      await localDB.addToQueue('plans', 'DELETE', { id });
-      setExercises(exercises.filter(ex => ex.id !== id));
-      toast.info("Exercise removed");
-    } catch (err) {
-      toast.error("Delete failed");
-    }
-  };
-
-  // Filter Catalog based on Search
-  const filteredCatalog = catalog.filter(ex => 
-    ex.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    ex.muscle_group?.toLowerCase().includes(searchQuery.toLowerCase())
-  );
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white pb-24">
-      {/* Header */}
-      <header className="px-6 pt-12 pb-6 border-b border-white/5 bg-black/50 backdrop-blur-xl sticky top-0 z-40">
-        <div className="flex items-center gap-4">
-          <Button 
-            variant="ghost" 
-            size="icon" 
-            onClick={() => navigate('/WeeklyPlan')}
-            className="text-zinc-500 hover:text-white"
-          >
-            <ChevronLeft />
-          </Button>
-          <h1 className="text-2xl font-black italic uppercase tracking-tighter">
-            {day} <span className="text-cyan-500">Plan</span>
-          </h1>
-        </div>
+      <header className="px-6 pt-12 pb-6 flex items-center gap-4 sticky top-0 bg-black/80 backdrop-blur-md z-30">
+        <Button variant="ghost" size="icon" onClick={() => navigate('/WeeklyPlan')}><ChevronLeft /></Button>
+        <h1 className="text-2xl font-black uppercase italic">{day} <span className="text-cyan-500">Plan</span></h1>
       </header>
 
-      {/* Current Exercises in Plan */}
-      <div className="px-6 py-8 space-y-4">
-        {exercises.length > 0 ? (
-          exercises.map((ex) => (
-            <div 
-              key={ex.id} 
-              className="group bg-zinc-900/40 border border-white/5 p-5 rounded-[2.5rem] flex items-center justify-between"
-            >
-              <div className="flex items-center gap-4">
-                <div className="w-12 h-12 bg-black rounded-2xl flex items-center justify-center border border-white/10">
-                  <Dumbbell size={20} className="text-cyan-500" />
-                </div>
+      {/* Main List */}
+      <div className="px-6 py-4 space-y-3">
+        {exercises.map((ex) => (
+          <div key={ex.id} className="bg-zinc-900/50 border border-white/5 p-5 rounded-[2rem] flex justify-between items-center">
+             <div className="flex items-center gap-4">
+                <img src={ex.image_url} className="w-12 h-12 rounded-xl object-cover bg-black" alt="" />
                 <div>
-                  <h3 className="font-black uppercase italic text-sm">{ex.exercise_name}</h3>
-                  <p className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest">
-                    {ex.target_sets} Sets • {ex.target_reps} Reps
+                  <h3 className="font-black uppercase italic text-sm leading-none mb-1">{ex.exercise_name}</h3>
+                  <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest">
+                    {ex.target_sets} × {ex.target_reps} {ex.show_weight ? `• ${ex.target_weight_kg}kg` : ''}
                   </p>
                 </div>
-              </div>
-              <Button 
-                variant="ghost" 
-                size="icon" 
-                onClick={() => removeExercise(ex.id)}
-                className="text-zinc-800 hover:text-red-500 hover:bg-red-500/10 rounded-full"
-              >
-                <Trash2 size={18} />
-              </Button>
-            </div>
-          ))
-        ) : (
-          <div className="text-center py-16 border-2 border-dashed border-zinc-900 rounded-[3rem]">
-            <p className="text-zinc-700 text-[10px] font-black uppercase tracking-widest">No movements assigned</p>
+             </div>
+             <Button variant="ghost" onClick={() => {
+                db.plans.delete(ex.id);
+                setExercises(exercises.filter(e => e.id !== ex.id));
+             }} className="text-zinc-800 hover:text-red-500"><Trash2 size={18}/></Button>
           </div>
-        )}
+        ))}
 
-        {/* Add Trigger */}
-        <Button 
-          onClick={() => setIsAdding(true)} 
-          className="w-full py-10 bg-zinc-900/20 border-2 border-dashed border-zinc-800 hover:border-cyan-500/50 hover:bg-zinc-900/40 rounded-[2.5rem] transition-all group"
-        >
-          <Plus className="mr-2 text-zinc-600 group-hover:text-cyan-500" /> 
-          <span className="font-black uppercase italic text-xs text-zinc-500 group-hover:text-white">Add Movement</span>
+        <Button onClick={() => setIsAdding(true)} className="w-full py-10 bg-zinc-900/20 border-2 border-dashed border-zinc-800 rounded-[2.5rem] mt-4 font-black uppercase italic text-zinc-500">
+          <Plus className="mr-2" /> Add Movement
         </Button>
       </div>
 
-      {/* FULL UI MOVEMENT LIBRARY OVERLAY */}
+      {/* OVERLAY: Library & Filters */}
       {isAdding && (
-        <div className="fixed inset-0 bg-black z-50 flex flex-col animate-in fade-in slide-in-from-bottom-4 duration-300">
-          {/* Overlay Header */}
-          <div className="p-6 border-b border-white/5 bg-zinc-950">
+        <div className="fixed inset-0 bg-black z-50 flex flex-col">
+          <div className="p-6 bg-zinc-950 border-b border-white/5">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-xl font-black uppercase italic text-cyan-500">Movement Library</h2>
-              <Button variant="ghost" size="icon" onClick={() => setIsAdding(false)} className="rounded-full bg-zinc-900">
-                <X size={20} />
-              </Button>
+              <Button variant="ghost" onClick={() => setIsAdding(false)} className="rounded-full bg-zinc-900"><X /></Button>
             </div>
-            
-            {/* Search Bar */}
-            <div className="relative">
+            <div className="relative mb-4">
               <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500" size={18} />
               <input 
-                type="text"
-                placeholder="Search 300+ exercises..."
+                className="w-full bg-zinc-900 rounded-2xl py-4 pl-12 pr-4 text-sm font-bold border border-white/5"
+                placeholder="Search..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-zinc-900 border border-white/5 rounded-2xl py-4 pl-12 pr-4 text-sm font-bold focus:outline-none focus:border-cyan-500/50"
               />
+            </div>
+            {/* Filter Chips */}
+            <div className="flex gap-2 overflow-x-auto pb-2 no-scrollbar">
+              {categories.map(cat => (
+                <button 
+                  key={cat} 
+                  onClick={() => setActiveFilter(cat)}
+                  className={`px-4 py-2 rounded-full text-[10px] font-black uppercase whitespace-nowrap border transition-all ${
+                    activeFilter === cat ? 'bg-cyan-500 border-cyan-500 text-black' : 'bg-zinc-900 border-white/5 text-zinc-500'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
             </div>
           </div>
 
-          {/* Exercise List */}
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
-            {filteredCatalog.length > 0 ? (
-              filteredCatalog.map(ex => (
-                <div 
-                  key={ex.id} 
-                  onClick={() => addExerciseToPlan(ex)}
-                  className="group bg-zinc-900/40 border border-white/5 p-4 rounded-[2rem] flex items-center gap-4 active:scale-95 transition-all hover:border-cyan-500/50 hover:bg-zinc-800/50"
-                >
-                  {/* Premium Preview */}
-                  <div className="w-16 h-16 bg-black rounded-2xl overflow-hidden border border-white/10 shrink-0 relative">
-                    {ex.image_url ? (
-                      <img src={ex.image_url} alt="" className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity" />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center"><Dumbbell className="text-zinc-800" /></div>
-                    )}
-                  </div>
-
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <h3 className="font-black uppercase italic text-sm group-hover:text-cyan-400 transition-colors leading-none">{ex.name}</h3>
-                      {ex.is_favorite && <Star size={10} className="fill-cyan-500 text-cyan-500" />}
-                    </div>
-                    <p className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mt-1 italic">
-                      {ex.muscle_group || 'General'}
-                    </p>
-                  </div>
-
-                  <div className="flex gap-1">
-                    <Button variant="ghost" size="icon" className="text-zinc-700 hover:text-cyan-500 rounded-full h-8 w-8">
-                      <Info size={16} />
-                    </Button>
-                    <div className="bg-cyan-500/10 text-cyan-500 p-2 rounded-full group-hover:bg-cyan-500 group-hover:text-black transition-colors">
-                      <Plus size={16} strokeWidth={3} />
-                    </div>
-                  </div>
+            {filteredCatalog.map(ex => (
+              <div key={ex.id} className="bg-zinc-900/40 p-4 rounded-[2rem] flex items-center gap-4 border border-white/5">
+                <img src={ex.image_url} className="w-16 h-16 rounded-2xl object-cover" alt="" />
+                <div className="flex-1">
+                  <h4 className="font-black uppercase italic text-sm">{ex.name}</h4>
+                  <p className="text-[10px] text-zinc-500 font-bold uppercase">{ex.equipment || 'Bodyweight'}</p>
                 </div>
-              ))
-            ) : (
-              <div className="text-center py-20">
-                <p className="text-zinc-700 text-xs font-black uppercase italic tracking-widest">No movements match "{searchQuery}"</p>
+                <div className="flex gap-1">
+                  {ex.is_favorite && <Star size={16} className="fill-cyan-500 text-cyan-500 mr-2" />}
+                  <Button variant="ghost" onClick={() => setSelectedEx(ex)} className="bg-cyan-500/10 text-cyan-500 rounded-full h-10 w-10 p-0">
+                    <Plus size={20} strokeWidth={3} />
+                  </Button>
+                </div>
               </div>
-            )}
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* OVERLAY: Configuration Modal (Add Sets/Reps) */}
+      {selectedEx && (
+        <div className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[60] flex items-end">
+          <div className="w-full bg-zinc-900 rounded-t-[3rem] p-8 animate-in slide-in-from-bottom duration-300">
+            <div className="flex items-center gap-4 mb-8">
+              <img src={selectedEx.image_url} className="w-20 h-20 rounded-[2rem] object-cover" alt="" />
+              <div>
+                <h3 className="text-xl font-black uppercase italic leading-none">{selectedEx.name}</h3>
+                <p className="text-cyan-500 font-bold uppercase text-[10px] mt-2 tracking-widest">{selectedEx.muscle_group}</p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-4 mb-8">
+              <div className="text-center">
+                <p className="text-[10px] font-black uppercase text-zinc-500 mb-2">Sets</p>
+                <input type="number" value={config.sets} onChange={e => setConfig({...config, sets: e.target.value})} className="w-full bg-black border border-white/5 rounded-2xl py-4 text-center font-black text-xl" />
+              </div>
+              <div className="text-center">
+                <p className="text-[10px] font-black uppercase text-zinc-500 mb-2">Reps</p>
+                <input type="number" value={config.reps} onChange={e => setConfig({...config, reps: e.target.value})} className="w-full bg-black border border-white/5 rounded-2xl py-4 text-center font-black text-xl" />
+              </div>
+              <div className="text-center">
+                <p className="text-[10px] font-black uppercase text-zinc-500 mb-2">Weight</p>
+                <input type="number" value={config.weight} onChange={e => setConfig({...config, weight: e.target.value})} className="w-full bg-black border border-white/5 rounded-2xl py-4 text-center font-black text-xl" />
+              </div>
+            </div>
+
+            <div className="flex gap-3">
+              <Button onClick={() => setSelectedEx(null)} className="flex-1 h-16 bg-zinc-800 rounded-2xl font-black uppercase italic">Cancel</Button>
+              <Button onClick={confirmAdd} className="flex-2 h-16 bg-cyan-500 text-black rounded-2xl font-black uppercase italic flex-[2]">Add to Workout</Button>
+            </div>
           </div>
         </div>
       )}
